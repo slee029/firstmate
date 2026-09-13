@@ -4791,6 +4791,113 @@ test_paused_until_that_passed_is_rechecked_before_the_cadence() {
 }
 
 
+# Unknown semantic state must not let rendering alone postpone inspection.
+# The backend fixture changes every capture, while the real watcher owns the
+# timer, queue, acknowledgement and repeated escalation across process restarts.
+unknown_churn_launch() {  # <dir> <out> [env assignments...]
+  local dir=$1 out=$2
+  shift 2
+  PATH="$dir/fakebin:$PATH" FM_FAKE_TMUX_WINDOW=test:fm-unknown \
+    FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" FM_FAKE_TMUX_CAPTURE_CHURN=1 \
+    FM_FAKE_TMUX_CAPTURE_COUNT_FILE="$dir/captures" \
+    FM_STATE_OVERRIDE="$dir/state" FM_CREW_STATE_BIN="$dir/fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE='state: unknown · source: pane · unverified' \
+    FM_WATCH_HANDLING_SUCCESSOR=1 FM_BUSY_TURN_MAX_SECS=3600 FM_STALE_ESCALATE_SECS=240 \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$@" "$WATCH" > "$out" &
+  UNKNOWN_WATCH_PID=$!
+}
+
+unknown_churn_case() {  # <name>
+  local dir state
+  dir=$(make_case "$1"); state="$dir/state"
+  printf 'rendering without verified progress\n' > "$dir/pane.txt"
+  printf 'window=test:fm-unknown\nbackend=tmux\nkind=scout\nharness=codex\nspawn_gen=s946684800.1.1\n' > "$state/unknown.meta"
+  printf 'working: preparing result\n' > "$state/unknown.status"
+  printf '%s' "$(seen_sig "$state/unknown.status")" > "$state/.seen-unknown_status"
+  touch -t 200001010000 "$state/unknown.meta" "$state/unknown.turn-ended"
+  prime_turnend_seen "$state/unknown.turn-ended"
+  printf '%s\n' "$dir"
+}
+
+test_unknown_churn_is_bounded_and_throttled() {
+  local dir state out timer key pid first round wakes
+  dir=$(unknown_churn_case unknown-churn); state="$dir/state"; out="$dir/watch.out"
+  key=test_fm-unknown; timer="$state/.stale-since-$key"
+  unknown_churn_launch "$dir" "$out" env
+  pid=$UNKNOWN_WATCH_PID
+  wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "unknown churn surfaced before its inspection interval"; }
+  first=$(cat "$timer" 2>/dev/null || true)
+  [ -n "$first" ] || { reap "$pid"; fail "old unknown churn did not start an inspection timer"; }
+  wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "unknown churn bypassed inspection throttling"; }
+  [ "$(cat "$timer")" = "$first" ] || { reap "$pid"; fail "render churn reset the unknown inspection timer"; }
+  [ "$(cat "$dir/captures")" -ge 3 ] || { reap "$pid"; fail "churn fixture never made distinct captures"; }
+  [ "$(cat "$state/.count-$key")" = 0 ] || { reap "$pid"; fail "churn fixture accidentally tested a stable pane"; }
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "unknown churn enqueued before the interval"; }
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional fixture stop"
+
+  for round in 1 2 3; do
+    echo $(( $(date +%s) - 500 )) > "$timer"
+    unknown_churn_launch "$dir" "$out" env
+    pid=$UNKNOWN_WATCH_PID
+    wait_for_exit "$pid" 100 || { reap "$pid"; fail "old unknown churn never escalated"; }
+    grep -F 'possible wedge' "$out" >/dev/null || fail "unknown inspection lost the existing escalation path"
+    [ "$(cat "$state/.wedge-escalations-$key")" = "$round" ] || fail "render churn reset escalation history"
+    wakes=$(awk -F '\t' '$3 == "stale" { n++ } END { print n+0 }' "$state/.wake-queue")
+    [ "$wakes" = 1 ] || fail "unknown inspection did not enqueue exactly once"
+    ack_stopped_cycle "$state" || fail "could not acknowledge unknown inspection"
+    unknown_churn_launch "$dir" "$out" env
+    pid=$UNKNOWN_WATCH_PID
+    wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "acknowledged unknown inspection immediately repeated"; }
+    [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "acknowledged wake was duplicated"; }
+    reap "$pid"
+    ack_stopped_cycle "$state" || fail "could not acknowledge the intentional throttling stop"
+  done
+  [ "$(cat "$state/.wedge-escalations-$key")" = 3 ] || fail "missing third escalation"
+  pass "unknown render churn preserves the real inspection interval, queue acknowledgement and escalation history"
+}
+
+test_unknown_churn_progress_generation_and_terminal_delivery() {
+  local scenario dir state out key pid gen
+  for scenario in progress turn replacement; do
+    dir=$(unknown_churn_case "unknown-churn-$scenario"); state="$dir/state"; out="$dir/watch.out"
+    key=test_fm-unknown
+    echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+    printf '2\n' > "$state/.wedge-escalations-$key"
+    case "$scenario" in
+      progress)
+        # Use the native progress producer with a valid current generation;
+        # without a verified busy record the Pi task's state remains unknown.
+        printf 'window=test:fm-unknown\nbackend=tmux\nkind=scout\nharness=pi\nspawn_gen=s946684800.1.1\n' > "$state/unknown.meta"
+        gen=$("$ROOT/bin/fm-busy-event.sh" arm "$state" unknown)
+        "$ROOT/bin/fm-busy-event.sh" progress "$state" unknown --gen "$gen" --source pi-ext --event native-progress \
+          || fail "could not publish valid native progress"
+        rm -f "$state/unknown.busy-state"
+        ;;
+      turn) touch "$state/unknown.turn-ended"; prime_turnend_seen "$state/unknown.turn-ended" ;;
+      replacement)
+        printf 'window=test:fm-unknown\nbackend=tmux\nkind=scout\nharness=codex\nspawn_gen=s%s.2.2\n' "$(date +%s)" > "$state/unknown.meta"
+        ;;
+    esac
+    unknown_churn_launch "$dir" "$out" env
+    pid=$UNKNOWN_WATCH_PID
+    wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "fresh $scenario inherited an old unknown timer"; }
+    [ ! -e "$state/.stale-since-$key" ] || { reap "$pid"; fail "fresh $scenario retained an old timer"; }
+    [ ! -e "$state/.wedge-escalations-$key" ] || { reap "$pid"; fail "fresh $scenario retained escalation history"; }
+    # A real terminal declaration still surfaces through the unchanged signal path.
+    printf 'done: result prepared\n' >> "$state/unknown.status"
+    wait_for_exit "$pid" 100 || { reap "$pid"; fail "terminal declaration was hidden by unknown churn"; }
+    grep -F 'signal:' "$out" >/dev/null || fail "terminal declaration used the age fallback instead of delivery"
+    ack_stopped_cycle "$state" || fail "terminal signal could not be acknowledged"
+  done
+  pass "fresh native progress, completed turns and replacement generations reset unknown age without hiding terminal delivery"
+}
+
+
+test_unknown_churn_is_bounded_and_throttled
+test_unknown_churn_progress_generation_and_terminal_delivery
+
 test_status_span_actionable_classifier
 test_status_span_survives_a_later_routine_append
 test_status_span_respects_decision_closure

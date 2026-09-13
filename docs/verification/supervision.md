@@ -445,6 +445,28 @@ Observed output:
 fm-claude-stop-autoarm: ok
 ```
 
+## Unknown-state inspection
+
+The executable watcher regression ran on Linux x86_64 with Bash 5.2 on 2026-09-13.
+It drives the real watcher, queue, generation-bound acknowledgement and escalation cadence with an isolated backend fixture whose capture changes on every read.
+The same test fails before the fix because an old unknown-state worker never starts an inspection timer.
+
+```sh
+bin/fm-test-run.sh tests/fm-watch-triage.test.sh --jobs 1
+```
+
+The focused cases report:
+
+```text
+ok - unknown render churn preserves the real inspection interval, queue acknowledgement and escalation history
+ok - fresh native progress, completed turns and replacement generations reset unknown age without hiding terminal delivery
+```
+
+The marker-age and admission contract belongs to `pane_turn_over_age` in `bin/fm-watch.sh`.
+This is a deterministic inspection-path test, not live verification of a vendor's busy indicator or terminal hook.
+The shared semantic classifier and its harness verification gates remain unchanged.
+The existing stable-unknown, busy, declared-wait and secondmate cases in the same suite cover the paths the new admission excludes or preserves.
+
 ## Watcher continuity
 
 The cross-harness evidence combines the 2026-07-17 live pass with Claude's replacement Stop-owned path revalidated on 2026-07-24, all against isolated project and home state.

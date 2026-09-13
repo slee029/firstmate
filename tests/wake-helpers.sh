@@ -73,6 +73,9 @@ if [ "${1:-}" = "capture-pane" ]; then
   if [ -n "${FM_FAKE_TMUX_CAPTURE_COUNT_FILE:-}" ]; then
     _capture_count=$(cat "$FM_FAKE_TMUX_CAPTURE_COUNT_FILE" 2>/dev/null || echo 0)
     printf '%s\n' "$((_capture_count + 1))" > "$FM_FAKE_TMUX_CAPTURE_COUNT_FILE"
+    if [ "${FM_FAKE_TMUX_CAPTURE_CHURN:-0}" = 1 ]; then
+      printf 'render tick %s\n' "$_capture_count"
+    fi
     if [ -n "${FM_FAKE_TMUX_CAPTURE_FAIL_AFTER:-}" ] \
       && [ "$_capture_count" -ge "$FM_FAKE_TMUX_CAPTURE_FAIL_AFTER" ]; then
       exit 1
