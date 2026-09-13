@@ -933,8 +933,8 @@ clear_write_tracking() {  # <window-key>
 # The worktree write probe runs ONLY here, inside the at-threshold branch that is
 # about to escalate: at most one bounded walk per window per STALE_ESCALATE_SECS,
 # never per poll.
-wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file> <task>
-  local win=$1 since_file=$2 label=$3 escalation_file=$4 task=$5 since age n reason
+wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file> <task> [verdict]
+  local win=$1 since_file=$2 label=$3 escalation_file=$4 task=$5 since age n reason key throttled
   since=$(cat "$since_file" 2>/dev/null || true)
   case "$since" in
     ''|*[!0-9]*)
@@ -947,6 +947,21 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
     *)
       age=$(( $(date +%s) - since ))
       if [ "$age" -ge "$STALE_ESCALATE_SECS" ]; then
+        if [ "${6:-}" = unknown ]; then
+          key=$(window_key "$win")
+          throttled=1
+          captain_call_stale_bound "$key" "$task" && throttled=0
+          if [ -n "$STALE_WAIT_DECLARATION" ]; then
+            if [ "$throttled" -ne 0 ]; then
+              fm_wake_append stale "$win" "stale: $win" || exit 1
+              stale_wait_record "$key"
+            fi
+            rm -f "$since_file" "$escalation_file"
+            clear_write_tracking "$key"
+            [ "$throttled" -eq 0 ] || wake "stale: $win"
+            return 0
+          fi
+        fi
         if crew_worktree_written_since "$task" "$STATE" "$since_file"; then
           wedge_defer_writing "$win" "$since_file" "$label" "$age"
           return 0
@@ -991,7 +1006,6 @@ pane_turn_over_age() {  # <task> <verdict> <kind> <last-status>
     busy) busy_turn_over_age "$task"; return ;;
     unknown)
       [ "$kind" != secondmate ] || return 1
-      ! status_is_captain_relevant "$last" || return 1
       ! status_is_paused_or_captain_held "$last" || return 1
       spawn=$(fm_meta_get "$STATE/$task.meta" spawn_gen)
       epoch=${spawn#s}; epoch=${epoch%%.*}
@@ -1005,7 +1019,11 @@ pane_turn_over_age() {  # <task> <verdict> <kind> <last-status>
       else
         [ "$(age_of "$STATE/$task.meta")" -ge "$BUSY_TURN_MAX_SECS" ] || return 1
       fi
-      busy_turn_over_age "$task"
+      busy_turn_over_age "$task" || return 1
+      if status_is_captain_relevant "$last"; then
+        crew_is_provably_working "$task" || return 1
+      fi
+      return 0
       ;;
     *) return 1 ;;
   esac
@@ -1076,9 +1094,6 @@ handle_paused_stale() {  # <window> <task> <hash>
 # crossed, honoring the worker's OWN declared external wait. Prints/queues
 # nothing itself; it only chooses which absorber owns the crossed bound.
 # 0 when the declared-pause cadence took the pane, 1 when the wedge timer did.
-# The optional label describes an unknown-state inspection; pane_turn_over_age
-# admits it only without a terminal/wait declaration, so busy-only pause
-# admission and its liveness requirement below remain unchanged.
 #
 # A busy pane past BUSY_TURN_MAX_SECS is normally a wedge suspect because a hung
 # foreground call can hide behind a busy signature. A `paused:` declaration or
@@ -1090,8 +1105,10 @@ handle_paused_stale() {  # <window> <task> <hash>
 # remains daemon-owned and receives the undecorated wake identity for its own
 # classification, which is why the declaration is read before the afk branch
 # rather than after it.
-busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-file> [label]
-  local win=$1 task=$2 h=$3 since_file=$4 escalation_file=$5 key statusf declared label=${6:-busy (no completed turn)}
+busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-file> [verdict]
+  local win=$1 task=$2 h=$3 since_file=$4 escalation_file=$5 key statusf declared verdict=${6:-busy}
+  local label='busy (no completed turn)'
+  [ "$verdict" != unknown ] || label='unknown (no observed progress)'
   statusf="$STATE/$task.status"
   if status_is_paused_or_captain_held "$(last_status_line "$statusf")"; then
     if afk_present; then
@@ -1133,7 +1150,7 @@ busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-fil
     handle_paused_stale "$win" "$task" "$h"
     return 0
   fi
-  wedge_timer_check "$win" "$since_file" "$label" "$escalation_file" "$task"
+  wedge_timer_check "$win" "$since_file" "$label" "$escalation_file" "$task" "$verdict"
   return 1
 }
 
@@ -2303,11 +2320,21 @@ EOF
     # reused below so a busy verdict is consistent within one cycle.
     busy_verdict=$(window_busy_verdict "$w" "$tail40")
     if [ "${busy_verdict%% *}" = busy ]; then busy_now=0; else busy_now=1; fi
-    bound_label='busy (no completed turn)'
-    [ "${busy_verdict%% *}" != unknown ] || bound_label='unknown (no observed progress)'
     if [ "$h" = "$prev" ]; then
       n=$(( $(cat "$cf" 2>/dev/null || echo 0) + 1 ))
       echo "$n" > "$cf"
+    else
+      printf '%s' "$h" > "$hf"
+      n=0
+      echo "$n" > "$cf"
+    fi
+    if pane_turn_over_age "$task" "$busy_verdict" "$kind" "$last"; then
+      if ! busy_turn_bound_check "$w" "$task" "$h" "$ssf" "$ewf" "${busy_verdict%% *}"; then
+        [ ! -e "$pf" ] || clear_pause_tracking "$key"
+      fi
+      continue
+    fi
+    if [ "$h" = "$prev" ]; then
       if [ "$n" -ge 2 ] && [ "$busy_now" -ne 0 ]; then
         # The pane is idle/stale at hash $h. Triage decides whether this wakes
         # firstmate. Detection itself is unchanged from above.
@@ -2434,35 +2461,15 @@ EOF
           fi
         fi
       else
-        # Pane busy or not yet stably stale: reset pending escalation bookkeeping,
-        # unless pane_turn_over_age admits a busy or unknown worker for bounded
-        # inspection. Render churn cannot clear that admitted interval; declared
-        # waits keep the existing busy-only admission and recheck cadence.
-        paused_bound=1
-        if pane_turn_over_age "$task" "$busy_verdict" "$kind" "$last"; then
-          busy_turn_bound_check "$w" "$task" "$h" "$ssf" "$ewf" "$bound_label" && paused_bound=0
-        else
-          rm -f "$ssf" "$ewf"
-          clear_write_tracking "$key"
-        fi
-        # A busy pane normally means real work resumed, so stale pause bookkeeping
-        # is cleared - but not in the same poll the declared-pause cadence just
-        # recorded it, or the re-surface throttle it depends on would be erased and
-        # the pause would re-surface every poll instead of once per long cadence.
-        if [ "$paused_bound" -ne 0 ] && [ -e "$pf" ] && { [ "$n" -ge 2 ] || ! status_is_paused_or_captain_held "$(last_status_line "$STATE/$(window_to_task "$w" "$STATE").status")"; }; then
+        rm -f "$ssf" "$ewf"
+        clear_write_tracking "$key"
+        if [ -e "$pf" ] && { [ "$n" -ge 2 ] || ! status_is_paused_or_captain_held "$(last_status_line "$STATE/$(window_to_task "$w" "$STATE").status")"; }; then
           clear_pause_tracking "$key"
         fi
       fi
     else
-      printf '%s' "$h" > "$hf"
-      echo 0 > "$cf"
-      paused_bound=1
-      if pane_turn_over_age "$task" "$busy_verdict" "$kind" "$last"; then
-        busy_turn_bound_check "$w" "$task" "$h" "$ssf" "$ewf" "$bound_label" && paused_bound=0
-      else
-        rm -f "$ssf" "$ewf"
-        clear_write_tracking "$key"
-      fi
+      rm -f "$ssf" "$ewf"
+      clear_write_tracking "$key"
       task=$(window_to_task "$w" "$STATE")
       if ! afk_present && status_is_paused_or_captain_held "$(last_status_line "$STATE/$task.status")" && [ "$busy_now" -ne 0 ]; then
         case "$(pause_state_class "$w" "$task")" in
@@ -2478,9 +2485,7 @@ EOF
           none)   clear_stale_hash_tracking "$key" ;;
           *)      clear_pause_tracking "$key" ;;
         esac
-      elif [ "$paused_bound" -ne 0 ] && [ -e "$pf" ]; then
-        # Same rule as the stable-hash branch: never clear pause bookkeeping the
-        # declared-pause cadence recorded on this very poll.
+      elif [ -e "$pf" ]; then
         clear_pause_tracking "$key"
       fi
     fi

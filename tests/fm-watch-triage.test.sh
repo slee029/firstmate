@@ -4800,6 +4800,7 @@ unknown_churn_launch() {  # <dir> <out> [env assignments...]
   PATH="$dir/fakebin:$PATH" FM_FAKE_TMUX_WINDOW=test:fm-unknown \
     FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" FM_FAKE_TMUX_CAPTURE_CHURN=1 \
     FM_FAKE_TMUX_CAPTURE_COUNT_FILE="$dir/captures" \
+    FM_HOME="$dir" FM_DATA_OVERRIDE="$dir/data" FM_CONFIG_OVERRIDE="$dir/config" \
     FM_STATE_OVERRIDE="$dir/state" FM_CREW_STATE_BIN="$dir/fakebin/fm-crew-state.sh" \
     FM_FAKE_CREW_STATE='state: unknown · source: pane · unverified' \
     FM_WATCH_HANDLING_SUCCESSOR=1 FM_BUSY_TURN_MAX_SECS=3600 FM_STALE_ESCALATE_SECS=240 \
@@ -4858,6 +4859,154 @@ test_unknown_churn_is_bounded_and_throttled() {
   pass "unknown render churn preserves the real inspection interval, queue acknowledgement and escalation history"
 }
 
+test_unknown_validation_preserves_interval_across_hash_branches() {
+  local status dir state out key timer pid first round poll
+  for status in working done; do
+    dir=$(unknown_churn_case "unknown-validation-$status"); state="$dir/state"; out="$dir/watch.out"
+    key=test_fm-unknown; timer="$state/.stale-since-$key"
+    printf '%s: implementation complete, validating\n' "$status" > "$state/unknown.status"
+    prime_status_seen "$state" "$state/unknown.status"
+    unknown_churn_launch "$dir" "$out" env \
+      FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+    pid=$UNKNOWN_WATCH_PID
+    wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "$status validation surfaced before its inspection interval"; }
+    first=$(cat "$timer" 2>/dev/null || true)
+    [ -n "$first" ] || { reap "$pid"; fail "$status validation under unknown churn never opened an inspection interval"; }
+    [ "$(cat "$state/.count-$key")" = 0 ] || { reap "$pid"; fail "$status validation did not start with changing output"; }
+    reap "$pid"
+    ack_stopped_cycle "$state" || fail "could not acknowledge the validation fixture stop"
+    printf '2\n' > "$state/.wedge-escalations-$key"
+    unknown_churn_launch "$dir" "$out" env FM_FAKE_TMUX_CAPTURE_CHURN=0 \
+      FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+    pid=$UNKNOWN_WATCH_PID
+    for round in 1 2; do
+      printf 'validation output %s\n' "$round" > "$dir/pane.txt"
+      for poll in 1 2 3 4 5 6; do
+        wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "$status validation surfaced during alternating output"; }
+        [ "$(cat "$state/.count-$key")" -ge 2 ] && break
+      done
+      [ "$(cat "$state/.count-$key")" -ge 2 ] || { reap "$pid"; fail "alternating output never reached stable classification"; }
+      [ "$(cat "$state/.hash-$key")" = "$(hash_text "validation output $round")" ] \
+        || { reap "$pid"; fail "watcher did not observe the replacement validation output"; }
+      [ "$(cat "$timer")" = "$first" ] || { reap "$pid"; fail "$status validation reset the admitted interval on stable output"; }
+      [ "$(cat "$state/.wedge-escalations-$key")" = 2 ] \
+        || { reap "$pid"; fail "$status validation reset escalation history on stable output"; }
+      [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "$status validation queued an early inspection"; }
+    done
+    echo $(( $(date +%s) - 500 )) > "$timer"
+    wait_for_exit "$pid" 100 || { reap "$pid"; fail "$status validation never reached its preserved inspection bound"; }
+    grep -F 'demand-deep-inspection' "$out" >/dev/null || fail "$status validation lost repeated escalation history"
+    [ "$(cat "$state/.wedge-escalations-$key")" = 3 ] || fail "$status validation did not advance its escalation count"
+    [ "$(awk -F '\t' '$3 == "stale" { n++ } END { print n+0 }' "$state/.wake-queue")" = 1 ] \
+      || fail "$status validation did not enqueue exactly one inspection"
+    ack_stopped_cycle "$state" || fail "could not acknowledge the validation inspection"
+  done
+  pass "unknown validation preserves its interval and escalation history across changing and stable output, including obsolete terminal events"
+}
+
+test_unknown_churn_backlog_hold_cadence_and_away_silence() {
+  local dir state out key timer throttle pid phase declaration previous sig poll
+  command -v tasks-axi >/dev/null 2>&1 \
+    || { echo "skip: tasks-axi not found (unknown-churn backlog hold)"; return 0; }
+  dir=$(make_hold_home unknown-held-churn 'working: still tidying the branch' hold) \
+    || fail "could not build the unknown-state backlog-hold fixture"
+  state="$dir/state"; out="$dir/watch.out"; key=$(hold_key)
+  timer="$state/.stale-since-$key"; throttle="$state/.paused-resurfaced-$key"
+  printf 'window=test:fm-held-merge\nkind=ship\nharness=codex\nbackend=tmux\nspawn_gen=s946684800.1.1\n' > "$state/held-merge.meta"
+  touch -t 200001010000 "$state/held-merge.meta" "$state/held-merge.turn-ended"
+  prime_turnend_seen "$state/held-merge.turn-ended"
+  printf 'rendering held work\n' > "$dir/pane.txt"
+  sig=$(seen_sig "$state/held-merge.status")
+  previous=
+  for phase in first recheck replacement; do
+    case "$phase" in
+      recheck) set_mtime "$(( $(date +%s) - 5000 ))" "$throttle" ;;
+      replacement)
+        printf 'Proceed with the next review\n' > "$dir/decision.txt"
+        run_hold "$dir" answer held-merge --decision-file "$dir/decision.txt" --release \
+          || fail "could not release the first unknown-state hold"
+        run_hold "$dir" hold held-merge --reason 'awaiting the captain on release' \
+          || fail "could not replace the unknown-state hold"
+        [ "$(seen_sig "$state/held-merge.status")" = "$sig" ] || fail "replacing the backlog hold changed the status event"
+        ;;
+    esac
+    echo $(( $(date +%s) - 500 )) > "$timer"
+    printf '2\n' > "$state/.wedge-escalations-$key"
+    unknown_churn_launch "$dir" "$out" env FM_FAKE_TMUX_WINDOW=test:fm-held-merge FM_PAUSE_RESURFACE_SECS=999
+    pid=$UNKNOWN_WATCH_PID
+    wait_for_exit "$pid" 100 || { reap "$pid"; fail "$phase unknown-state hold did not surface its due inspection"; }
+    [ "$(cat "$out")" = 'stale: test:fm-held-merge' ] || fail "$phase held work was treated as a wedge"
+    [ "$(hold_stale_wakes "$state")" = 1 ] || fail "$phase hold did not enqueue exactly one inspection"
+    [ ! -e "$state/.wedge-escalations-$key" ] || fail "held work retained wedge escalation history"
+    declaration=$(cat "$throttle" 2>/dev/null || true)
+    [ -n "$declaration" ] || fail "$phase hold did not record its declaration throttle"
+    case "$phase" in
+      recheck) [ "$declaration" = "$previous" ] || fail "rechecking the same hold changed its identity" ;;
+      replacement) [ "$declaration" != "$previous" ] || fail "replacement hold inherited the first declaration's throttle" ;;
+    esac
+    previous=$declaration
+    ack_stopped_cycle "$state" || fail "could not acknowledge the $phase held inspection"
+    echo $(( $(date +%s) - 500 )) > "$timer"
+    unknown_churn_launch "$dir" "$out" env FM_FAKE_TMUX_WINDOW=test:fm-held-merge FM_PAUSE_RESURFACE_SECS=999
+    pid=$UNKNOWN_WATCH_PID
+    wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "$phase held churn bypassed its declaration throttle"; }
+    wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "$phase held churn repeated its inspection"; }
+    [ "$(hold_stale_wakes "$state")" = 0 ] || { reap "$pid"; fail "$phase held churn queued a repeated inspection"; }
+    [ "$(cat "$throttle")" = "$declaration" ] || { reap "$pid"; fail "held churn changed the declaration throttle"; }
+    [ "$(cat "$state/.count-$key")" = 0 ] || { reap "$pid"; fail "held fixture did not continuously change output"; }
+    reap "$pid"
+    ack_stopped_cycle "$state" || fail "could not acknowledge the held-churn fixture stop"
+  done
+  rm -f "$throttle"
+  write_away_record "$state"
+  for phase in record daemon; do
+    [ "$phase" != daemon ] || date +%s > "$state/.afk"
+    echo $(( $(date +%s) - 500 )) > "$timer"
+    printf '2\n' > "$state/.wedge-escalations-$key"
+    unknown_churn_launch "$dir" "$out" env FM_FAKE_TMUX_WINDOW=test:fm-held-merge FM_PAUSE_RESURFACE_SECS=999
+    pid=$UNKNOWN_WATCH_PID
+    for poll in 1 2; do
+      wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "away $phase rechecked backlog-held unknown churn"; }
+    done
+    [ ! -s "$out" ] && [ "$(hold_stale_wakes "$state")" = 0 ] \
+      || { reap "$pid"; fail "away $phase emitted a held inspection"; }
+    [ ! -e "$throttle" ] && [ ! -e "$state/.wedge-escalations-$key" ] \
+      || { reap "$pid"; fail "away $phase recorded an inspection it never delivered"; }
+    reap "$pid"
+    ack_stopped_cycle "$state" || fail "could not acknowledge the away $phase fixture stop"
+  done
+  rm -f "$state/.afk"
+  archive_away_record "$state"
+  echo $(( $(date +%s) - 500 )) > "$timer"
+  unknown_churn_launch "$dir" "$out" env FM_FAKE_TMUX_WINDOW=test:fm-held-merge FM_PAUSE_RESURFACE_SECS=999
+  pid=$UNKNOWN_WATCH_PID
+  wait_for_exit "$pid" 100 || { reap "$pid"; fail "return from away did not restore the held inspection"; }
+  [ "$(cat "$out")" = 'stale: test:fm-held-merge' ] || fail "return from away converted held work into a wedge"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the held inspection after return"
+  pass "unknown held churn preserves first sight, declaration identity, recheck cadence and away silence"
+}
+
+test_unknown_churn_terminal_and_wait_exemptions() {
+  local status dir state out key pid
+  for status in done paused captain-held; do
+    dir=$(unknown_churn_case "unknown-exempt-$status"); state="$dir/state"; out="$dir/watch.out"
+    key=test_fm-unknown
+    printf '%s: result is with the supervisor\n' "$status" > "$state/unknown.status"
+    prime_status_seen "$state" "$state/unknown.status"
+    echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+    printf '2\n' > "$state/.wedge-escalations-$key"
+    unknown_churn_launch "$dir" "$out" env
+    pid=$UNKNOWN_WATCH_PID
+    wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "$status declaration entered unknown inspection"; }
+    [ ! -e "$state/.stale-since-$key" ] && [ ! -e "$state/.wedge-escalations-$key" ] \
+      || { reap "$pid"; fail "$status declaration retained unknown escalation bookkeeping"; }
+    [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "$status declaration queued unknown inspection"; }
+    reap "$pid"
+    ack_stopped_cycle "$state" || fail "could not acknowledge the $status exemption fixture stop"
+  done
+  pass "true terminal and declared waits remain exempt from unknown-state inspection"
+}
+
 test_unknown_churn_progress_generation_and_terminal_delivery() {
   local scenario dir state out key pid gen
   for scenario in progress turn replacement; do
@@ -4896,6 +5045,9 @@ test_unknown_churn_progress_generation_and_terminal_delivery() {
 
 
 test_unknown_churn_is_bounded_and_throttled
+test_unknown_validation_preserves_interval_across_hash_branches
+test_unknown_churn_backlog_hold_cadence_and_away_silence
+test_unknown_churn_terminal_and_wait_exemptions
 test_unknown_churn_progress_generation_and_terminal_delivery
 
 test_status_span_actionable_classifier
