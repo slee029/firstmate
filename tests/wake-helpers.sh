@@ -122,6 +122,9 @@ make_fake_crew_state() {  # <fakebin>
 #!/usr/bin/env bash
 set -u
 id=${1:-}
+if [ -n "${FM_FAKE_CREW_STATE_CALL_LOG:-}" ]; then
+  printf '%s\n' "$id" >> "$FM_FAKE_CREW_STATE_CALL_LOG"
+fi
 key=$(printf '%s' "$id" | tr -c 'A-Za-z0-9' '_')
 var="FM_FAKE_CREW_STATE_$key"
 val=${!var:-${FM_FAKE_CREW_STATE:-}}

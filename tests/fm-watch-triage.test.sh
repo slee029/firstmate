@@ -4860,23 +4860,26 @@ test_unknown_churn_is_bounded_and_throttled() {
 }
 
 test_unknown_validation_preserves_interval_across_hash_branches() {
-  local status dir state out key timer pid first round poll
+  local status dir state out key timer pid first round poll reads
   for status in working done; do
     dir=$(unknown_churn_case "unknown-validation-$status"); state="$dir/state"; out="$dir/watch.out"
     key=test_fm-unknown; timer="$state/.stale-since-$key"
+    reads="$dir/state-reads"
+    printf 'window=test:fm-unknown\nbackend=tmux\nkind=ship\nharness=codex\nspawn_gen=s946684800.1.1\n' > "$state/unknown.meta"
     printf '%s: implementation complete, validating\n' "$status" > "$state/unknown.status"
     prime_status_seen "$state" "$state/unknown.status"
-    unknown_churn_launch "$dir" "$out" env \
+    unknown_churn_launch "$dir" "$out" env FM_FAKE_CREW_STATE_CALL_LOG="$reads" \
       FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
     pid=$UNKNOWN_WATCH_PID
     wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "$status validation surfaced before its inspection interval"; }
     first=$(cat "$timer" 2>/dev/null || true)
     [ -n "$first" ] || { reap "$pid"; fail "$status validation under unknown churn never opened an inspection interval"; }
     [ "$(cat "$state/.count-$key")" = 0 ] || { reap "$pid"; fail "$status validation did not start with changing output"; }
+    [ ! -s "$reads" ] || { reap "$pid"; fail "$status validation queried crew state before inspection was due"; }
     reap "$pid"
     ack_stopped_cycle "$state" || fail "could not acknowledge the validation fixture stop"
     printf '2\n' > "$state/.wedge-escalations-$key"
-    unknown_churn_launch "$dir" "$out" env FM_FAKE_TMUX_CAPTURE_CHURN=0 \
+    unknown_churn_launch "$dir" "$out" env FM_FAKE_TMUX_CAPTURE_CHURN=0 FM_FAKE_CREW_STATE_CALL_LOG="$reads" \
       FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
     pid=$UNKNOWN_WATCH_PID
     for round in 1 2; do
@@ -4892,6 +4895,7 @@ test_unknown_validation_preserves_interval_across_hash_branches() {
       [ "$(cat "$state/.wedge-escalations-$key")" = 2 ] \
         || { reap "$pid"; fail "$status validation reset escalation history on stable output"; }
       [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "$status validation queued an early inspection"; }
+      [ ! -s "$reads" ] || { reap "$pid"; fail "$status validation queried crew state during ordinary stable polls"; }
     done
     echo $(( $(date +%s) - 500 )) > "$timer"
     wait_for_exit "$pid" 100 || { reap "$pid"; fail "$status validation never reached its preserved inspection bound"; }
@@ -4899,9 +4903,16 @@ test_unknown_validation_preserves_interval_across_hash_branches() {
     [ "$(cat "$state/.wedge-escalations-$key")" = 3 ] || fail "$status validation did not advance its escalation count"
     [ "$(awk -F '\t' '$3 == "stale" { n++ } END { print n+0 }' "$state/.wake-queue")" = 1 ] \
       || fail "$status validation did not enqueue exactly one inspection"
+    if [ "$status" = done ]; then
+      [ -f "$reads" ] && [ "$(wc -l < "$reads")" -eq 1 ] \
+        || fail "terminal-event reconciliation did not read crew state exactly once at the due boundary"
+    else
+      [ ! -s "$reads" ] || fail "nonterminal inspection unnecessarily queried crew state"
+    fi
     ack_stopped_cycle "$state" || fail "could not acknowledge the validation inspection"
   done
   pass "unknown validation preserves its interval and escalation history across changing and stable output, including obsolete terminal events"
+  pass "terminal-event reconciliation reads crew state only at the due inspection boundary"
 }
 
 test_unknown_churn_backlog_hold_cadence_and_away_silence() {
@@ -4987,19 +4998,30 @@ test_unknown_churn_backlog_hold_cadence_and_away_silence() {
 }
 
 test_unknown_churn_terminal_and_wait_exemptions() {
-  local status dir state out key pid
+  local status dir state out key pid reads expired
   for status in done paused captain-held; do
     dir=$(unknown_churn_case "unknown-exempt-$status"); state="$dir/state"; out="$dir/watch.out"
     key=test_fm-unknown
+    reads="$dir/state-reads"; expired=$(( $(date +%s) - 500 ))
     printf '%s: result is with the supervisor\n' "$status" > "$state/unknown.status"
     prime_status_seen "$state" "$state/unknown.status"
-    echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+    echo "$expired" > "$state/.stale-since-$key"
     printf '2\n' > "$state/.wedge-escalations-$key"
-    unknown_churn_launch "$dir" "$out" env
+    unknown_churn_launch "$dir" "$out" env FM_FAKE_CREW_STATE_CALL_LOG="$reads"
     pid=$UNKNOWN_WATCH_PID
     wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "$status declaration entered unknown inspection"; }
-    [ ! -e "$state/.stale-since-$key" ] && [ ! -e "$state/.wedge-escalations-$key" ] \
+    [ ! -e "$state/.wedge-escalations-$key" ] \
       || { reap "$pid"; fail "$status declaration retained unknown escalation bookkeeping"; }
+    if [ "$status" = done ]; then
+      [ -s "$state/.stale-since-$key" ] && [ "$(cat "$state/.stale-since-$key")" != "$expired" ] \
+        || { reap "$pid"; fail "true terminal state did not restart its inspection interval"; }
+      wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "true terminal state woke during ordinary polls"; }
+      [ -f "$reads" ] && [ "$(wc -l < "$reads")" -eq 1 ] \
+        || { reap "$pid"; fail "true terminal state was queried repeatedly after a due inspection"; }
+    else
+      [ ! -e "$state/.stale-since-$key" ] \
+        || { reap "$pid"; fail "$status declaration retained unknown inspection bookkeeping"; }
+    fi
     [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "$status declaration queued unknown inspection"; }
     reap "$pid"
     ack_stopped_cycle "$state" || fail "could not acknowledge the $status exemption fixture stop"

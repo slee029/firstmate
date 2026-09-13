@@ -925,8 +925,7 @@ clear_write_tracking() {  # <window-key>
 # Repeat-poll wedge-timer bookkeeping for an already-classified stale hash
 # absorbed as provably-working - repairs a missing/corrupt timer (self-heals a
 # watcher restart between recording the hash and recording the timer), or
-# escalates once STALE_ESCALATE_SECS have elapsed. Never re-reads the crew
-# state (the costly check already ran once, at classification time). Shared by
+# escalates once STALE_ESCALATE_SECS have elapsed. Shared by
 # both places a hash can be absorbed this way: the plain non-terminal path,
 # and the stale_is_terminal-overridden path (a captain-relevant status-log
 # line that an active run/busy pane outranked).
@@ -959,6 +958,13 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
             rm -f "$since_file" "$escalation_file"
             clear_write_tracking "$key"
             [ "$throttled" -eq 0 ] || wake "stale: $win"
+            return 0
+          fi
+          if status_is_captain_relevant "$(last_status_line "$STATE/$task.status")" \
+            && ! crew_is_provably_working "$task"; then
+            rm -f "$escalation_file"
+            clear_write_tracking "$key"
+            date +%s > "$since_file"
             return 0
           fi
         fi
@@ -1019,11 +1025,7 @@ pane_turn_over_age() {  # <task> <verdict> <kind> <last-status>
       else
         [ "$(age_of "$STATE/$task.meta")" -ge "$BUSY_TURN_MAX_SECS" ] || return 1
       fi
-      busy_turn_over_age "$task" || return 1
-      if status_is_captain_relevant "$last"; then
-        crew_is_provably_working "$task" || return 1
-      fi
-      return 0
+      busy_turn_over_age "$task"
       ;;
     *) return 1 ;;
   esac
