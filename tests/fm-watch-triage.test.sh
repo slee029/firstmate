@@ -4997,36 +4997,97 @@ test_unknown_churn_backlog_hold_cadence_and_away_silence() {
   pass "unknown held churn preserves first sight, declaration identity, recheck cadence and away silence"
 }
 
-test_unknown_churn_terminal_and_wait_exemptions() {
-  local status dir state out key pid reads expired
-  for status in done paused captain-held; do
+test_unknown_validation_ready_handoff_without_status_append() {
+  local dir state out key timer pid reads current sig poll round
+  dir=$(unknown_churn_case unknown-validation-ready); state="$dir/state"; out="$dir/watch.out"
+  key=test_fm-unknown; timer="$state/.stale-since-$key"
+  reads="$dir/state-reads"; current="$dir/crew-state"
+  printf 'window=test:fm-unknown\nbackend=tmux\nkind=ship\nharness=codex\nspawn_gen=s946684800.1.1\n' > "$state/unknown.meta"
+  printf 'done: implementation complete\n' > "$state/unknown.status"
+  printf 'state: working · source: run-step · validating (running)\n' > "$current"
+  rm -f "$state/.seen-unknown_status"
+  unknown_churn_launch "$dir" "$out" env FM_FAKE_CREW_STATE_FILE="$current" FM_FAKE_CREW_STATE_CALL_LOG="$reads"
+  pid=$UNKNOWN_WATCH_PID
+  wait_for_exit "$pid" 100 || { reap "$pid"; fail "implementation status was not delivered before validation"; }
+  grep -Fx "signal: $state/unknown.status" "$out" >/dev/null || fail "implementation status did not use normal signal delivery"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the implementation status"
+  sig=$(seen_sig "$state/unknown.status")
+  [ "$(status_presentation_marker_offset "$state/.hb-surfaced-unknown" "$state/unknown.status")" = "$(size_of "$state/unknown.status")" ] \
+    || fail "the fixture left implementation status unseen by the heartbeat backstop"
+  : > "$reads"
+
+  unknown_churn_launch "$dir" "$out" env FM_FAKE_CREW_STATE_FILE="$current" FM_FAKE_CREW_STATE_CALL_LOG="$reads"
+  pid=$UNKNOWN_WATCH_PID
+  wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "active validation surfaced before inspection was due"; }
+  [ -s "$timer" ] && [ ! -s "$reads" ] || { reap "$pid"; fail "active validation did not open a cheap inspection interval"; }
+  echo $(( $(date +%s) - 500 )) > "$timer"
+  wait_for_exit "$pid" 100 || { reap "$pid"; fail "active validation did not reach its inspection boundary"; }
+  grep -F 'possible wedge' "$out" >/dev/null || fail "active validation was prematurely delivered as terminal"
+  [ "$(wc -l < "$reads")" -eq 1 ] || fail "active inspection did not reconcile state exactly once"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the active validation inspection"
+
+  printf 'validation still running\n' > "$dir/pane.txt"
+  unknown_churn_launch "$dir" "$out" env FM_FAKE_TMUX_CAPTURE_CHURN=0 \
+    FM_FAKE_CREW_STATE_FILE="$current" FM_FAKE_CREW_STATE_CALL_LOG="$reads"
+  pid=$UNKNOWN_WATCH_PID
+  wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "validation immediately repeated an acknowledged inspection"; }
+  printf 'state: done · source: run-step · checks green: PR ready for review (still monitoring for merge/close)\n' > "$current"
+  printf 'checks green, monitoring for merge\n' > "$dir/pane.txt"
+  for poll in 1 2 3 4 5 6; do
+    wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "ready validation bypassed its due inspection boundary"; }
+    [ "$(cat "$state/.count-$key")" -ge 2 ] && break
+  done
+  [ "$(cat "$state/.count-$key")" -ge 2 ] \
+    && [ "$(cat "$state/.hash-$key")" = "$(hash_text 'checks green, monitoring for merge')" ] \
+    || { reap "$pid"; fail "the ready output never stabilized in the watcher"; }
+  [ "$(wc -l < "$reads")" -eq 1 ] || { reap "$pid"; fail "ordinary ready-state polls queried authoritative state"; }
+  [ "$(seen_sig "$state/unknown.status")" = "$sig" ] || { reap "$pid"; fail "CI readiness appended a status event"; }
+  echo $(( $(date +%s) - 500 )) > "$timer"
+  wait_for_exit "$pid" 100 || { reap "$pid"; fail "CI-ready validation was suppressed at its due handoff boundary"; }
+  [ "$(cat "$out")" = 'stale: test:fm-unknown' ] || fail "CI-ready validation did not use terminal first-sight delivery"
+  [ "$(wc -l < "$reads")" -eq 2 ] || fail "ready inspection did not reconcile state exactly once"
+  [ ! -e "$timer" ] && [ ! -e "$state/.wedge-escalations-$key" ] || fail "terminal handoff retained wedge bookkeeping"
+  [ "$(cat "$state/.stale-$key")" = "$(hash_text 'checks green, monitoring for merge')" ] || fail "terminal handoff lost its hash suppressor"
+  for round in 1 2; do
+    FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/drain.out" 2> "$dir/drain.err" || fail "terminal handoff could not be drained"
+    [ "$(awk -F '\t' '$3 == "stale" && $4 == "test:fm-unknown" { n++ } END { print n+0 }' "$dir/drain.out")" = 1 ] \
+      || fail "terminal handoff was not replayed exactly once before acknowledgement"
+  done
+  ack_stopped_cycle "$state" || fail "terminal handoff could not be acknowledged"
+  [ ! -s "$state/.wake-queue" ] || fail "acknowledged terminal handoff remained queued"
+  unknown_churn_launch "$dir" "$out" env FM_FAKE_TMUX_CAPTURE_CHURN=0 \
+    FM_FAKE_CREW_STATE_FILE="$current" FM_FAKE_CREW_STATE_CALL_LOG="$reads"
+  pid=$UNKNOWN_WATCH_PID
+  for poll in 1 2; do
+    wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "the same terminal hash repeated its acknowledged handoff"; }
+  done
+  [ ! -s "$state/.wake-queue" ] && [ ! -e "$timer" ] || { reap "$pid"; fail "terminal dedup reopened an inspection"; }
+  [ "$(wc -l < "$reads")" -eq 2 ] || { reap "$pid"; fail "terminal dedup queried state on ordinary polls"; }
+  [ "$(seen_sig "$state/unknown.status")" = "$sig" ] || { reap "$pid"; fail "terminal handoff depended on a new status event"; }
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the terminal-dedup fixture stop"
+  pass "CI-ready validation with unchanged status delivers one terminal handoff, replays until acknowledged, and stays deduplicated"
+}
+
+test_unknown_churn_wait_exemptions() {
+  local status dir state out key pid
+  for status in paused captain-held; do
     dir=$(unknown_churn_case "unknown-exempt-$status"); state="$dir/state"; out="$dir/watch.out"
     key=test_fm-unknown
-    reads="$dir/state-reads"; expired=$(( $(date +%s) - 500 ))
     printf '%s: result is with the supervisor\n' "$status" > "$state/unknown.status"
     prime_status_seen "$state" "$state/unknown.status"
-    echo "$expired" > "$state/.stale-since-$key"
+    echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
     printf '2\n' > "$state/.wedge-escalations-$key"
-    unknown_churn_launch "$dir" "$out" env FM_FAKE_CREW_STATE_CALL_LOG="$reads"
+    unknown_churn_launch "$dir" "$out" env
     pid=$UNKNOWN_WATCH_PID
     wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "$status declaration entered unknown inspection"; }
-    [ ! -e "$state/.wedge-escalations-$key" ] \
+    [ ! -e "$state/.stale-since-$key" ] && [ ! -e "$state/.wedge-escalations-$key" ] \
       || { reap "$pid"; fail "$status declaration retained unknown escalation bookkeeping"; }
-    if [ "$status" = done ]; then
-      [ -s "$state/.stale-since-$key" ] && [ "$(cat "$state/.stale-since-$key")" != "$expired" ] \
-        || { reap "$pid"; fail "true terminal state did not restart its inspection interval"; }
-      wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "true terminal state woke during ordinary polls"; }
-      [ -f "$reads" ] && [ "$(wc -l < "$reads")" -eq 1 ] \
-        || { reap "$pid"; fail "true terminal state was queried repeatedly after a due inspection"; }
-    else
-      [ ! -e "$state/.stale-since-$key" ] \
-        || { reap "$pid"; fail "$status declaration retained unknown inspection bookkeeping"; }
-    fi
     [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "$status declaration queued unknown inspection"; }
     reap "$pid"
     ack_stopped_cycle "$state" || fail "could not acknowledge the $status exemption fixture stop"
   done
-  pass "true terminal and declared waits remain exempt from unknown-state inspection"
+  pass "declared waits remain exempt from unknown-state inspection"
 }
 
 test_unknown_churn_progress_generation_and_terminal_delivery() {
@@ -5068,8 +5129,9 @@ test_unknown_churn_progress_generation_and_terminal_delivery() {
 
 test_unknown_churn_is_bounded_and_throttled
 test_unknown_validation_preserves_interval_across_hash_branches
+test_unknown_validation_ready_handoff_without_status_append
 test_unknown_churn_backlog_hold_cadence_and_away_silence
-test_unknown_churn_terminal_and_wait_exemptions
+test_unknown_churn_wait_exemptions
 test_unknown_churn_progress_generation_and_terminal_delivery
 
 test_status_span_actionable_classifier
