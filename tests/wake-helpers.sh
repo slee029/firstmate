@@ -128,7 +128,6 @@ fi
 key=$(printf '%s' "$id" | tr -c 'A-Za-z0-9' '_')
 var="FM_FAKE_CREW_STATE_$key"
 val=${!var:-${FM_FAKE_CREW_STATE:-}}
-[ -z "${FM_FAKE_CREW_STATE_FILE:-}" ] || val=$(cat "$FM_FAKE_CREW_STATE_FILE")
 printf '%s\n' "${val:-state: unknown · source: none · fake default}"
 exit 0
 SH

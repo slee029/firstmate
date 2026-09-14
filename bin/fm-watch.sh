@@ -932,7 +932,7 @@ clear_write_tracking() {  # <window-key>
 # The worktree write probe runs ONLY here, inside the at-threshold branch that is
 # about to escalate: at most one bounded walk per window per STALE_ESCALATE_SECS,
 # never per poll.
-wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file> <task> [verdict] [hash]
+wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file> <task> [verdict]
   local win=$1 since_file=$2 label=$3 escalation_file=$4 task=$5 since age n reason key throttled
   since=$(cat "$since_file" 2>/dev/null || true)
   case "$since" in
@@ -959,10 +959,6 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
             clear_write_tracking "$key"
             [ "$throttled" -eq 0 ] || wake "stale: $win"
             return 0
-          fi
-          if status_is_captain_relevant "$(last_status_line "$STATE/$task.status")" \
-            && ! crew_is_provably_working "$task"; then
-            surface_terminal_stale "$win" "$task" "$7"
           fi
         fi
         if crew_worktree_written_since "$task" "$STATE" "$since_file"; then
@@ -1149,12 +1145,7 @@ busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-fil
     handle_paused_stale "$win" "$task" "$h"
     return 0
   fi
-  if [ "$verdict" = unknown ] && [ ! -e "$since_file" ] && [ ! -e "$escalation_file" ] \
-    && status_is_captain_relevant "$(last_status_line "$statusf")"; then
-    key=$(window_key "$win")
-    [ "$(cat "$STATE/.stale-$key" 2>/dev/null || true)" != "$h" ] || return 0
-  fi
-  wedge_timer_check "$win" "$since_file" "$label" "$escalation_file" "$task" "$verdict" "$h"
+  wedge_timer_check "$win" "$since_file" "$label" "$escalation_file" "$task" "$verdict"
   return 1
 }
 
@@ -1334,24 +1325,6 @@ captain_call_stale_bound() {  # <window-key> <task>
   STALE_WAIT_DECLARATION=$(captain_call_declaration "$task" "$CAPTAIN_CALL_IDENTITY")
   afk_record_present && return 0
   stale_wait_throttled "$key" "$STALE_WAIT_DECLARATION"
-}
-
-surface_terminal_stale() {
-  local win=$1 task=$2 h=$3 key statusf record end rest ident
-  key=$(window_key "$win")
-  fm_wake_append stale "$win" "stale: $win" || exit 1
-  stale_wait_record "$key"
-  printf '%s' "$h" > "$STATE/.stale-$key"
-  rm -f "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key"
-  clear_write_tracking "$key"
-  statusf="$STATE/$task.status"
-  record=$(status_span_first_actionable_record "$statusf" 0)
-  case $? in
-    0|1) end=${record%%$'\t'*}; rest=${record#*$'\t'}; ident=${rest%%$'\t'*} ;;
-    *) end=''; ident='' ;;
-  esac
-  mark_surfaced "$statusf" "$end" "$ident"
-  wake "stale: $win"
 }
 
 # Surface a stale pane no classifier could resolve, so firstmate inspects it: it
@@ -2411,7 +2384,19 @@ EOF
               clear_write_tracking "$key"
               triage_log "absorbed stale (open captain call already surfaced for this status): $w"
             else
-              surface_terminal_stale "$w" "$task" "$h"
+              fm_wake_append stale "$w" "stale: $w" || exit 1
+              stale_wait_record "$key"
+              printf '%s' "$h" > "$sf"
+              rm -f "$ssf"
+              clear_write_tracking "$key"
+              stale_status="$STATE/$(window_to_task "$w" "$STATE").status"
+              stale_record=$(status_span_first_actionable_record "$stale_status" 0)
+              case $? in
+                0|1) stale_end=${stale_record%%$'\t'*}; stale_rest=${stale_record#*$'\t'}; stale_ident=${stale_rest%%$'\t'*} ;;
+                *) stale_end=''; stale_ident='' ;;
+              esac
+              mark_surfaced "$stale_status" "$stale_end" "$stale_ident"
+              wake "stale: $w"
             fi
           elif [ -e "$ssf" ]; then
             # This exact hash was already overridden as provably-working (a
