@@ -169,6 +169,7 @@ rules_err=$(jq -r --argjson verified_harnesses "$VERIFIED_HARNESSES" --arg provi
   elif any((.rules // [])[]; (.when | type) != "string" or (.when | length) == 0) then "each rule needs non-empty when"
   elif any((.rules // [])[]; (profiles(.use) | length) == 0) then "each rule needs at least one use profile"
   elif any((.rules // [])[]; has("approval") and .approval != "captain") then "approval must be \"captain\" when present"
+  elif has("select") and (.select != "quota-balanced" and .select != "preference") then "select must be quota-balanced or preference"
   elif any((.rules // [])[]; has("select") and ((.select | type) != "string" or (.select | length) == 0)) then "select must be a non-empty string"
   elif any((.rules // [])[]; has("select") and .select != "quota-balanced" and .select != "preference") then
     "unknown select: " + ([.rules[] | select(has("select") and .select != "quota-balanced" and .select != "preference") | .select] | unique | join(", "))
@@ -383,7 +384,7 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg non
   elif $sel.escalate then
     $ev + {status: "escalate", reason: $sel.escalate, candidates: ($answer_use | map(evaluate(.)))}
   elif ($sel.use | length) == 0 then $ev + {status: "escalate", reason: "no profiles configured for \($sel.source)", note: $sel.note, candidates: []}
-  elif ($rule.select // "quota-balanced") == "preference" then
+  elif ((if $sel.source == "default" then $cfg.select else $rule.select // $cfg.select end) // "quota-balanced") == "preference" then
     (if $sel.source == "default" then $sel.use
      else $sel.use + profiles($cfg.default // null) end | map(evaluate(.))) as $cands |
     ([$cands | to_entries[] | select(.value.eligible)] | first) as $first |

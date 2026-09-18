@@ -2,8 +2,8 @@
 name: quota-array-dispatch
 description: >-
   Agent-only decision procedure for resolving a matched crew-dispatch profile
-  array from quota-axi's default TOON, ranking by spendPriority after three
-  orthogonal gates.
+  array from quota-axi's default TOON using the configured preference or
+  quota-balanced selection mode.
   Load when a dispatch rule or default resolves to more than one profile candidate.
 user-invocable: false
 metadata:
@@ -33,7 +33,17 @@ Authoritative multi-provider routing - including provider discovery from the har
 Use it only when the brief already fixed the candidate order and every candidate's provider is the harness's primary family.
 It does not replace the reasoning-class, runway-feasibility, or authentication gates above.
 Firstmate can optionally arm `bin/fm-procevent-quota.sh` for a recurring mid-task check that wakes when the tracked provider drops below its configured threshold or its runway becomes `exhausted_now`.
-The opt-in `bin/fm-dispatch-resolve.sh` (`docs/configuration.md` "Typed dispatch resolution") applies the same eligibility gates and `spendPriority` argmax in code after a typed rule match; it never removes this skill's authority, and its `ambiguous`, `escalate`, and `error` outcomes return here.
+The opt-in `bin/fm-dispatch-resolve.sh` (`docs/configuration.md` "Typed dispatch resolution") applies the configured preference order or quota-balanced `spendPriority` argmax in code after a typed rule match; it never removes this skill's authority, and its `ambiguous`, `escalate`, and `error` outcomes return here.
+
+## Selection mode
+
+Read the matched rule's `select`, then the home's top-level `select`, then use `quota-balanced` if both are absent. Both declarations accept only `preference` or `quota-balanced`; malformed values are configuration errors even when typed resolution is off. Direct `default` selection and rule-floor fallthrough use the home-wide mode. Preserve this policy when the typed resolver returns `ambiguous`, `escalate`, or `error`; do not bypass captain approval or an unverifiable rule floor.
+
+For `preference`, choose the first profile in array order not known-ineligible, then continue through `default` if the rule's candidates cannot proceed. Keep catalog, authentication, required reasoning-class, approval, and explicit floor safeguards. Known applicable `exhausted_now` or nonpositive known remaining quota blocks a candidate; positive percentages, projected runway, and `spendPriority` do not reorder or block preference candidates. Unknown quota and unverifiable profile floors remain eligible with disclosure. An unverifiable rule floor escalates; a known below-floor rule uses `default` instead.
+
+Disclose skipped candidates and their reported reset times, including five-hour and weekly windows where supplied; never invent reset times. Account for every candidate and disclose unknown evidence on the chosen profile. If none can proceed, escalate rather than choosing an exhausted profile. Use a fresh snapshot each intake so the preferred profile returns automatically after recovery, without persistent state. Do not use the worker helper to implement this policy: it rejects unknown quota.
+
+The three gates and spendPriority ranking below describe `quota-balanced`, not `preference`. Unknown spendPriority alone does not require a JSON fallback in preference mode when eligibility is already clear.
 
 ## Read the default TOON
 
@@ -41,7 +51,7 @@ Start each intake by running `quota-axi` once with no `--json`, and reuse that T
 Post-consolidation quota-axi (the floor owned by `bin/fm-quota-axi-lib.sh`) puts `spendPriority` in the default `quota[]` block beside `effectivePercentRemaining`, `runway`, `confidence`, `limitedBy`, and `resetsAt`.
 Sparse `exhaustion[]` carries finite-runway seconds only for `projected_exhaustion` and `exhausted_now`.
 Sparse `attention[]` names auth, stale, and unmeasurable facts.
-`spendPriority` is THE quota-perspective ranker.
+`spendPriority` is the quota-perspective ranker in `quota-balanced` mode only.
 It already computes the economics that older instructions reconstructed by hand from headroom, pace, reserve, and window-id lists; do not recompute those.
 Do not read `--json` on the normal path, and do not reach for `--full` to rebuild that economics.
 

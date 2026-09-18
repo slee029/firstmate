@@ -1194,6 +1194,7 @@ crew_dispatch_validate() {
     elif $typed and malformed_profile_floors([(.rules // [])[]? | profiles(.use?)[]?]) then "use profile floor needs scope and min_percent 0..100"
     elif $typed and ([(.rules // [])[]? | select(has("approval") and .approval != "captain")] | length > 0) then "approval must be \"captain\" when present"
     elif $typed and ([(.rules // [])[]? | select(has("floor") and floor_bad(.floor; true))] | length > 0) then "rule floor needs scope, min_percent 0..100, and provider matching ^[a-z0-9]+(-[a-z0-9]+)*\\z"
+    elif has("select") and (.select != "quota-balanced" and .select != "preference") then "select must be quota-balanced or preference"
     elif [(.rules // [])[]? | select(has("select") and ((.select? | type) != "string" or (.select | length) == 0))] | length > 0 then "select must be a non-empty string"
     elif [(.rules // [])[]? | .select? // empty | select(. != "quota-balanced" and . != "preference")] | length > 0 then
       "unknown select: " + ([ (.rules // [])[]? | .select? // empty | select(. != "quota-balanced" and . != "preference") ] | unique | join(", "))
@@ -1235,9 +1236,10 @@ crew_dispatch_validate() {
         (($selector // "quota-balanced") + "[" + ([$value[] | profile(.)] | join(", ")) + "]")
       else profile($value)
       end;
+    .select as $home_select |
     (["BOOTSTRAP_INFO: crew dispatch active config/crew-dispatch.json"]
-      + [(.rules // [])[]? | "BOOTSTRAP_INFO: crew dispatch rule: " + (.when | tostring) + " -> " + profile_set(.use; .select?)]
-      + (if has("default") then ["BOOTSTRAP_INFO: crew dispatch default: " + profile_set(.default; null)] else [] end))
+      + [(.rules // [])[]? | "BOOTSTRAP_INFO: crew dispatch rule: " + (.when | tostring) + " -> " + profile_set(.use; .select // $home_select)]
+      + (if has("default") then ["BOOTSTRAP_INFO: crew dispatch default: " + profile_set(.default; $home_select)] else [] end))
     | .[]
   ' "$file"
   fi

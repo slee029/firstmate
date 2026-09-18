@@ -629,6 +629,34 @@ assert_contains "$out" 'skipped claude:sonnet: profile floor all_models below 90
 cp "$BASE_RULES" "$RULES"
 pass "preference selects in order with reset evidence, default fallback, recovery, and authority gates"
 
+for choice in rule_4 default; do
+  jq '.select = "preference" | del(.rules[3].select) | .default = .rules[3].use' "$PREFERENCE_RULES" > "$RULES"
+  write_response "$RESPONSE" "$choice" 0.9
+  TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+  assert_contains "$out" "  profile: --harness 'claude'" "home preference applies to $choice"
+  jq '.select = "quota-balanced"' "$RULES" > "$RULES.tmp"
+  mv "$RULES.tmp" "$RULES"
+  TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+  assert_contains "$out" "  profile: --harness 'cursor'" "home quota-balanced applies to $choice"
+done
+for mode in preference quota-balanced; do
+  jq --arg mode "$mode" '.select = (if $mode == "preference" then "quota-balanced" else "preference" end) | .rules[3].select = $mode' "$PREFERENCE_RULES" > "$RULES"
+  write_response "$RESPONSE" rule_4 0.9
+  TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+  expected=cursor
+  [ "$mode" != preference ] || expected=claude
+  assert_contains "$out" "  profile: --harness '$expected'" "rule $mode overrides home mode"
+done
+jq '.select = "preference" | .default = .rules[3].use | .rules[3].select = "quota-balanced" | .rules[3].floor = {"provider":"claude","scope":"all_models","min_percent":90}' "$PREFERENCE_RULES" > "$RULES"
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+assert_contains "$out" "  profile: --harness 'claude'" "rule-floor fallthrough uses home default policy"
+for invalid in 'null' 'false' '3' '"mystery"' '[]'; do
+  jq --argjson invalid "$invalid" '.select = $invalid' "$BASE_RULES" > "$RULES"
+  TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+  expect_code 2 "$code" "invalid home select is refused: $invalid"
+done
+cp "$BASE_RULES" "$RULES"
+
 # --- quota-axi is read exactly once --------------------------------------------
 reset_log
 write_response "$RESPONSE" rule_4 0.9

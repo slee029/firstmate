@@ -455,9 +455,9 @@ Per rule, `when` and `use` are required; the top-level `rules` array itself may 
 Both `use` and the optional top-level `default` accept either one profile object or a non-empty array of profile objects.
 The single-object form stays fully backward-compatible, and every profile needs `harness`.
 Profile `model` and `effort` fields and rule `why` are optional.
-Rule `select`, `approval`, and `floor`, and profile `provider` and `floor` are optional declarations that only [typed dispatch resolution](#typed-dispatch-resolution-env-typesafe_api_key) applies in code; without that opt-in they are inert, and firstmate's own intake reads them as ordinary hints.
-Rule `select` accepts `quota-balanced` (the default) or `preference`.
-With `preference`, the resolver tries profiles in `use` array order, followed by `default`, choosing the first candidate not known-ineligible regardless of positive quota percentages or `spendPriority`.
+Rule `approval` and `floor`, and profile `provider` and `floor` are optional declarations that [typed dispatch resolution](#typed-dispatch-resolution-env-typesafe_api_key) applies in code; without that opt-in firstmate interprets them during intake.
+Optional top-level `select` accepts `quota-balanced` or `preference` and sets the home-wide mode for every rule and `default`; a rule's `select` overrides it. Absent declarations preserve `quota-balanced`. Bootstrap validates both levels even without the TypeSafe key.
+With `preference`, both the resolver and manual `quota-array-dispatch` intake try profiles in `use` array order, followed by `default`, choosing the first candidate not known-ineligible regardless of positive quota percentages or `spendPriority`.
 Unknown quota, including unverifiable profile floors, remains eligible in this mode; captain approval and unverifiable rule floors still escalate.
 Skipped earlier candidates are disclosed with their reasons and reported reset times; each intake reads a fresh snapshot, so a recovered preferred model wins again without a timer or persistent override.
 The resolver supplies the fixed neutral Choice option `No listed rule applies to this task.` for work that matches no listed rule.
@@ -475,7 +475,7 @@ An absent or unknown named row also makes the candidate unrankable and is report
 `ultra` is native-only: the model-aware validation contract and launch mapping are owned by `bin/fm-harness.sh validate-native-effort` and `bin/fm-spawn.sh` respectively.
 Codex `max` is valid when the profile selects `gpt-5.6-luna`, whose installed catalog entry supports that reasoning level.
 An omitted model or effort means the selected harness uses its own default for that axis.
-Except for typed resolution with a rule's explicit `select: "preference"`, every profile array is an implicit quota-aware choice resolved through `quota-array-dispatch`.
+Every profile array follows its effective selection mode through `quota-array-dispatch`, including when typed resolution is off or returns to manual intake. Direct default selection and rule-floor fallthrough use the home-wide mode; a preference rule's exhausted-candidate fallback continues its ordered list through `default`.
 If no dispatch rule fits, firstmate resolves `default` through the same object-or-array path before falling back to `config/crew-harness`.
 Except for `ultra`, which refuses unsupported profiles under the native-effort contract above, an effort value the chosen harness does not accept is recorded as `effort=` in task meta for traceability but omitted from the launch flags.
 Bootstrap reports unsupported harness/model/effort combinations as a `CREW_DISPATCH` diagnostic when they are visible in the file.
