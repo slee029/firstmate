@@ -53,7 +53,8 @@
 #   actionable, never selected around.
 #
 # Environment:
-#   TYPESAFE_API_KEY is the only resolver-specific environment setting.
+#   TYPESAFE_API_KEY enables resolution; FM_DISPATCH_RESOLVE_LOG optionally
+#   appends privacy-limited evidence JSONL (requires python3).
 #
 # Authority: this tool never replaces firstmate's judgment, quota-array-dispatch,
 #   the captain-approval gate, or fm-spawn.sh validation; it publishes one
@@ -84,8 +85,21 @@ TS_BASE=https://api.typesafe.ai
 TS_TIMEOUT=5
 DEFAULT_WHEN="No listed rule applies to this task."
 
-die() { printf 'error: %s\n' "$1" >&2; exit 2; }
+LOG_STATUS=error LOG_REASON='invocation did not complete' RESULT='' BRIEF=''
+RESP_FILE='' QUOTA='' RULES='' LAT_MS=null RESPONSE_VALID=false
+finish() {
+  if [ -n "${FM_DISPATCH_RESOLVE_LOG:-}" ]; then
+    python3 "$SCRIPT_DIR/fm-dispatch-resolve-log.py" "$FM_DISPATCH_RESOLVE_LOG" "$BRIEF" \
+      "$LOG_STATUS" "$LOG_REASON" "$LAT_MS" "$RESPONSE_VALID" "$RESP_FILE" \
+      <<< "$RESULT" 2>/dev/null || printf 'dispatch-resolve: evidence log unavailable\n' >&2
+  fi
+  rm -f "$RULES" "$RESP_FILE" "$QUOTA"
+}
+trap finish EXIT
+
+die() { LOG_STATUS=error; LOG_REASON='usage or configuration error'; printf 'error: %s\n' "$1" >&2; exit 2; }
 no_rules() {
+  LOG_STATUS=escalate LOG_REASON='no rules to match'
   printf 'dispatch-resolve:\n  status: escalate\n  reason: no rules to match\n'
   exit 0
 }
@@ -101,7 +115,7 @@ BRIEF='' PROJECT='' RULES_PATH="$CONFIG/crew-dispatch.json" RULES=''
 while [ $# -gt 0 ]; do
   case "$1" in
     --project) [ $# -ge 2 ] || die "--project needs a value"; PROJECT=$2; shift 2 ;;
-    -h|--help) usage; exit 0 ;;
+    -h|--help) LOG_STATUS=help LOG_REASON='help requested'; usage; exit 0 ;;
     -*) die "unknown flag $1" ;;
     *) [ -z "$BRIEF" ] || die "one brief file only"; BRIEF=$1; shift ;;
   esac
@@ -112,6 +126,7 @@ if [ -z "$TYPESAFE_API_KEY_PRIVATE" ]; then
   TYPESAFE_API_KEY_PRIVATE=$(fmx_env_get TYPESAFE_API_KEY "$FM_HOME/.env")
 fi
 if [ -z "$TYPESAFE_API_KEY_PRIVATE" ]; then
+  LOG_STATUS=off LOG_REASON='TYPESAFE_API_KEY absent'
   echo "dispatch-resolve: off (TYPESAFE_API_KEY absent from the environment and $FM_HOME/.env)" >&2
   exit 0
 fi
@@ -123,7 +138,6 @@ fi
 [ -r "$RULES_PATH" ] || die "rules file not readable: $RULES_PATH"
 command -v jq >/dev/null 2>&1 || die "jq required"
 RULES=$(mktemp) || die "mktemp failed"
-trap 'rm -f "$RULES"' EXIT
 cp "$RULES_PATH" "$RULES" || die "could not snapshot rules file: $RULES_PATH"
 chmod 400 "$RULES" || die "could not protect rules snapshot"
 VERIFIED_HARNESSES=$(fm_control_harnesses | jq -Rsc 'split("\n") | map(select(length > 0))')
@@ -217,6 +231,8 @@ RULE_COUNT=$(jq -r '(.rules // []) | length' "$RULES")
 
 emit_error() {
   local reason=$1
+  LOG_STATUS=error LOG_REASON=${reason%%: *}
+  RESULT=''
   echo "dispatch-resolve: error ($reason)" >&2
   printf 'dispatch-resolve:\n  status: error\n  reason: %s\n' "$reason"
   exit 0
@@ -228,7 +244,6 @@ fi
 
 RESP_FILE=$(mktemp) || die "mktemp failed"
 QUOTA=$(mktemp) || { rm -f "$RESP_FILE"; die "mktemp failed"; }
-trap 'rm -f "$RULES" "$RESP_FILE" "$QUOTA"' EXIT
 LAT_MS=null
 command -v curl >/dev/null 2>&1 || emit_error "curl not installed"
   REQUEST=$(jq -n --rawfile brief "$BRIEF" --arg project "$PROJECT" --arg model "$TS_MODEL" \
@@ -268,6 +283,8 @@ jq -e --slurpfile rules "$RULES" '
        (.usage.input_tokens | type) == "number" and
        (.usage.output_tokens | type) == "number"))' \
   "$RESP_FILE" >/dev/null 2>&1 || emit_error "response is not a rule Choice answer"
+
+RESPONSE_VALID=true
 
 # ---- quota evidence: one quota-axi --json snapshot -----------------------------
 command -v quota-axi >/dev/null 2>&1 || emit_error "quota-axi not installed"
@@ -417,7 +434,7 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg non
            else {} end)
       end
     end
-  end') || emit_error "resolution failed"
+  end | . + {skipped_candidates: [.candidates[]? | select(.eligible == false) | {profile: .profile, reason: .reason, resetsAt: reset_times(.)}]}') || emit_error "resolution failed"
 
 TEXT=$(jq -r '
   def flat: tostring | gsub("[\t\r\n]"; " ");

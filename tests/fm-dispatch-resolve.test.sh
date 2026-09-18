@@ -789,4 +789,51 @@ expect_code 0 "$code" "--help exits 0"
 assert_contains "$out" 'Usage:' "--help prints usage"
 pass "configuration errors exit 2 before any network call"
 
+EVIDENCE="$TMP_ROOT/dispatch-evidence.jsonl"
+cp "$PREFERENCE_RULES" "$RULES"
+write_response "$RESPONSE" rule_4 0.9
+TYPESAFE_API_KEY=$KEY FM_DISPATCH_RESOLVE_LOG="$EVIDENCE" QUOTA_AXI_FIXTURE="$PREFERRED_EXHAUSTED" run code out err "$BRIEF"
+expect_code 0 "$code" "evidence capture preserves successful exit"
+assert_contains "$out" "  profile: --harness 'cursor'" "evidence capture preserves selection"
+write_response "$RESPONSE" rule_4 0.4
+TYPESAFE_API_KEY=$KEY FM_DISPATCH_RESOLVE_LOG="$EVIDENCE" run code out err "$BRIEF"
+cp "$BASE_RULES" "$RULES"
+write_response "$RESPONSE" rule_3 0.9
+TYPESAFE_API_KEY=$KEY FM_DISPATCH_RESOLVE_LOG="$EVIDENCE" run code out err "$BRIEF"
+printf '%s' "private-body-$KEY" > "$RESPONSE"
+TYPESAFE_API_KEY=$KEY FAKE_CURL_HTTP=500 FM_DISPATCH_RESOLVE_LOG="$EVIDENCE" run code out err "$BRIEF"
+TYPESAFE_API_KEY='' FM_DISPATCH_RESOLVE_LOG="$EVIDENCE" run code out err "$BRIEF"
+TYPESAFE_API_KEY=$KEY FM_DISPATCH_RESOLVE_LOG="$EVIDENCE" run code out err "$TMP_ROOT/missing-brief"
+expect_code 2 "$code" "logging preserves configuration error exit"
+python3 - "$EVIDENCE" "$BRIEF" "$KEY" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+path, brief, secret = sys.argv[1:]
+text = pathlib.Path(path).read_text()
+rows = [json.loads(line) for line in text.splitlines()]
+assert [r['status'] for r in rows] == ['clear', 'ambiguous', 'escalate', 'error', 'off', 'error']
+first = rows[0]
+assert first['brief_path_hash'] == hashlib.sha256(brief.encode()).hexdigest()
+assert first['timestamp'] and first['latency_ms'] >= 0
+assert (first['rule'], first['confidence'], first['model']) == ('rule_4', 0.9, 'jev-1.13.0')
+assert (first['input_tokens'], first['output_tokens']) == (812, 60)
+assert first['selected_profile']['harness'] == 'cursor'
+assert first['skipped_candidates'][0]['resetsAt'] == ['2030-01-08T00:00:00Z']
+assert first['intake'] == 'clear'
+assert all(r['intake'] == 'fallback' and r['selected_profile'] is None for r in rows[1:])
+assert rows[3]['input_tokens'] is None
+assert secret not in text and 'private-body' not in text and brief not in text
+assert pathlib.Path(brief).read_text() not in text
+assert pathlib.Path(path).stat().st_mode & 0o777 == 0o600
+PY
+write_response "$RESPONSE" rule_4 0.9
+TYPESAFE_API_KEY=$KEY FM_DISPATCH_RESOLVE_LOG="$TMP_ROOT/missing-dir/log" run code out err "$BRIEF"
+expect_code 0 "$code" "unwritable evidence path never blocks resolution"
+assert_contains "$out" '  status: clear' "log failure preserves clear output"
+assert_contains "$err" 'evidence log unavailable' "log failure is disclosed without sensitive details"
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+assert_equals 6 "$(wc -l < "$EVIDENCE" | tr -d ' ')" "unset logging appends nothing"
+pass "opt-in evidence captures outcomes without brief contents or secrets"
 printf '# all fm-dispatch-resolve tests passed\n'
