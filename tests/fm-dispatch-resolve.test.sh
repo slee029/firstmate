@@ -503,6 +503,132 @@ assert_contains "$out" '  reason: no rankable eligible candidate' "no-candidate 
 assert_contains "$out" '-> not eligible: runway exhausted_now' "exhausted candidates keep their reason"
 pass "no rankable candidate: the tool escalates instead of guessing"
 
+# --- a sole eligible unknown-quota candidate needs no ranking -----------------
+reset_log
+SINGLE_UNKNOWN='{"harness":"pi","model":"antigravity/gemini","provider":"antigravity"}'
+for choice in rule_4 default; do
+  jq --argjson profile "$SINGLE_UNKNOWN" '.rules[3].use = $profile | .default = [$profile]' "$BASE_RULES" > "$RULES"
+  write_response "$RESPONSE" "$choice" 0.9
+  TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+  expect_code 0 "$code" "sole missing-provider candidate exits 0: $choice"
+  assert_contains "$out" '  status: clear' "sole missing-provider candidate clears: $choice"
+  assert_contains "$out" "  profile: --harness 'pi' --model 'antigravity/gemini'" "sole unknown profile is selected: $choice"
+  assert_contains "$out" '  note: sole eligible candidate unranked: provider antigravity not in the quota snapshot; quota uncertainty disclosed' "missing quota is disclosed: $choice"
+done
+
+write_response "$RESPONSE" rule_4 0.9
+for fixture in "$QUOTA" "$NO_APPLICABLE" "$PARTIAL_UNKNOWN"; do
+  if [ "$fixture" = "$QUOTA" ]; then
+    jq '.rules[3].use = {"harness":"kimi","model":"kimi-code/k3"}' "$BASE_RULES" > "$RULES"
+  else
+    jq '.rules[3].use = [.rules[3].use[1]]' "$BASE_RULES" > "$RULES"
+  fi
+  TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$fixture" run code out err "$BRIEF"
+  assert_contains "$out" '  status: clear' "sole unknown evidence clears: $fixture"
+  assert_contains "$out" '  note: sole eligible candidate unranked:' "sole unknown evidence has a note: $fixture"
+done
+
+jq --argjson profile "$SINGLE_UNKNOWN" '.rules[3].use = [$profile, .rules[3].use[2]]' "$BASE_RULES" > "$RULES"
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+assert_contains "$out" '  status: escalate' "multiple unranked candidates escalate"
+assert_not_contains "$out" '  profile:' "multiple unranked candidates never guess"
+
+jq --argjson profile "$SINGLE_UNKNOWN" '.rules[3].use = [$profile, .rules[3].use[1]]' "$BASE_RULES" > "$RULES"
+TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$UNKNOWN_EXHAUSTED" run code out err "$BRIEF"
+assert_contains "$out" '  status: clear' "sole eligible unknown candidate clears beside an ineligible candidate"
+assert_contains "$out" "  profile: --harness 'pi' --model 'antigravity/gemini'" "ineligible alternative is never selected"
+
+# Missing, unmeasured, and absent-row evidence cannot bypass a profile floor.
+for provider in antigravity kimi cursor; do
+  jq --arg provider "$provider" '.rules[3].use = {"harness":"pi","model":"example","provider":$provider,"floor":{"scope":"model:missing","min_percent":20}}' "$BASE_RULES" > "$RULES"
+  TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+  assert_contains "$out" '  status: escalate' "unverifiable sole profile floor escalates: $provider"
+  assert_not_contains "$out" '  profile:' "unverifiable sole profile floor emits no profile: $provider"
+done
+
+jq --argjson profile "$SINGLE_UNKNOWN" '.rules[3].use = $profile | .rules[3].approval = "captain"' "$BASE_RULES" > "$RULES"
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+assert_contains "$out" '  status: escalate' "sole unknown candidate cannot bypass approval"
+assert_not_contains "$out" '  profile:' "approval still withholds the unknown profile"
+jq --argjson profile "$SINGLE_UNKNOWN" '.rules[3].use = $profile | .rules[3].floor = {"provider":"antigravity","scope":"all_models","min_percent":20}' "$BASE_RULES" > "$RULES"
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+assert_contains "$out" '  status: escalate' "sole unknown candidate cannot bypass a rule floor"
+assert_not_contains "$out" '  profile:' "unverifiable rule floor withholds the unknown profile"
+
+ZERO_QUOTA="$TMP_ROOT/zero-quota.json"
+jq '(.providers[] | select(.provider == "cursor") | .quotaSemantics.effectiveAvailability[].effectivePercentRemaining) = 0' "$QUOTA" > "$ZERO_QUOTA"
+for fixture in "$UNKNOWN_EXHAUSTED" "$ZERO_QUOTA" "$NONNUMERIC"; do
+  jq '.rules[3].use = [.rules[3].use[1]]' "$BASE_RULES" > "$RULES"
+  TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$fixture" run code out err "$BRIEF"
+  assert_contains "$out" '  status: escalate' "sole exhausted, zero, or malformed-rank candidate escalates: $fixture"
+  assert_not_contains "$out" '  profile:' "sole exhausted, zero, or malformed-rank candidate has no profile: $fixture"
+done
+jq '.rules[3].use = .rules[1].use[1]' "$BASE_RULES" > "$RULES"
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+assert_contains "$out" '  status: escalate' "sole below-floor candidate escalates"
+assert_contains "$out" 'not eligible: profile floor all_models below 50%' "sole below-floor candidate retains evidence"
+assert_not_contains "$out" '  profile:' "sole below-floor candidate is never selected"
+cp "$BASE_RULES" "$RULES"
+pass "sole unknown quota clears with disclosure without bypassing eligibility, approval, floors, or ranking validity"
+
+# --- preference order ignores ranking, skips exhaustion, and recovers --------
+reset_log
+jq '.rules[3].select = "preference" | .rules[3].use = [.rules[3].use[0], .rules[3].use[1]] | del(.default)' "$BASE_RULES" > "$RULES"
+PREFERENCE_RULES="$TMP_ROOT/preference-rules.json"
+cp "$RULES" "$PREFERENCE_RULES"
+write_response "$RESPONSE" rule_4 0.9
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+assert_contains "$out" '  status: clear' "preference clears despite different spend priorities"
+assert_contains "$out" "  profile: --harness 'claude' --model 'sonnet' --effort 'high'" "first preferred profile wins over higher spendPriority"
+
+PREFERRED_EXHAUSTED="$TMP_ROOT/preferred-exhausted.json"
+jq '(.providers[] | select(.provider == "claude")) |= (.windows = [{"id":"weekly","resetsAt":"2030-01-08T00:00:00Z"}] | .quotaSemantics.effectiveAvailability[0] |= (.runway.status = "exhausted_now" | .limitingWindowIds = ["weekly"]))' "$QUOTA" > "$PREFERRED_EXHAUSTED"
+TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$PREFERRED_EXHAUSTED" run code out err "$BRIEF"
+assert_contains "$out" "  profile: --harness 'cursor' --model 'cursor-grok-4.6-medium'" "exhaustion selects the next preferred profile"
+assert_contains "$out" 'skipped claude:sonnet: runway exhausted_now at all_models resetsAt=2030-01-08T00:00:00Z' "skipped reason and weekly window reset appear in the note"
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+assert_contains "$out" "  profile: --harness 'claude' --model 'sonnet' --effort 'high'" "fresh available quota restores the preferred profile"
+
+TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$NONE" run code out err "$BRIEF"
+assert_contains "$out" '  status: escalate' "all known exhausted preference candidates escalate"
+assert_not_contains "$out" '  profile:' "all exhausted preference emits no profile"
+
+jq '.default = {"harness":"agy"}' "$PREFERENCE_RULES" > "$RULES"
+TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$NONE" run code out err "$BRIEF"
+assert_contains "$out" "  profile: --harness 'agy'" "preference falls through to default after exhausting rule profiles"
+assert_contains "$out" 'skipped claude:sonnet: runway exhausted_now at all_models; cursor:cursor-grok-4.6-medium: runway exhausted_now at all_models' "every skipped earlier profile is named"
+
+for provider in antigravity kimi; do
+  jq --arg provider "$provider" '.rules[3].use = [{"harness":"pi","model":"example","provider":$provider}, .rules[3].use[0]]' "$PREFERENCE_RULES" > "$RULES"
+  TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+  assert_contains "$out" '  status: clear' "preference permits unknown evidence: $provider"
+  assert_contains "$out" "  profile: --harness 'pi' --model 'example'" "unknown preferred profile wins: $provider"
+  assert_contains "$out" 'quota uncertainty disclosed' "unknown preference is disclosed: $provider"
+done
+
+jq '.rules[3].use[0].floor = {"scope":"model:missing","min_percent":20}' "$PREFERENCE_RULES" > "$RULES"
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+assert_contains "$out" "  profile: --harness 'claude' --model 'sonnet' --effort 'high'" "unknown profile floor is not known-ineligible in preference mode"
+for gate in approval floor; do
+  jq --arg gate "$gate" '.rules[3] |= if $gate == "approval" then .approval = "captain" else .floor = {"provider":"antigravity","scope":"all_models","min_percent":20} end' "$PREFERENCE_RULES" > "$RULES"
+  TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+  assert_contains "$out" '  status: escalate' "preference preserves rule gate: $gate"
+  assert_not_contains "$out" '  profile:' "preference rule gate emits no profile: $gate"
+done
+
+PREFERRED_ZERO="$TMP_ROOT/preferred-zero.json"
+jq '(.providers[] | select(.provider == "claude") | .quotaSemantics.effectiveAvailability[0]) |= (.effectivePercentRemaining = 0 | .resetsAt = "2030-01-01T05:00:00Z")' "$QUOTA" > "$PREFERRED_ZERO"
+cp "$PREFERENCE_RULES" "$RULES"
+TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$PREFERRED_ZERO" run code out err "$BRIEF"
+assert_contains "$out" "  profile: --harness 'cursor' --model 'cursor-grok-4.6-medium'" "zero remaining skips the preferred profile"
+assert_contains "$out" 'skipped claude:sonnet: 0% remaining at all_models resetsAt=2030-01-01T05:00:00Z' "direct row reset is disclosed"
+jq '.rules[3].use[0].floor = {"scope":"all_models","min_percent":90}' "$PREFERENCE_RULES" > "$RULES"
+TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
+assert_contains "$out" "  profile: --harness 'cursor' --model 'cursor-grok-4.6-medium'" "known below-floor preference candidate is skipped"
+assert_contains "$out" 'skipped claude:sonnet: profile floor all_models below 90%' "known floor skip is disclosed"
+cp "$BASE_RULES" "$RULES"
+pass "preference selects in order with reset evidence, default fallback, recovery, and authority gates"
+
 # --- quota-axi is read exactly once --------------------------------------------
 reset_log
 write_response "$RESPONSE" rule_4 0.9

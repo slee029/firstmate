@@ -21,8 +21,13 @@
 #   option, and a confidence. Everything after that is jq: the confidence
 #   floor, the rule's declared `approval` and `floor`, each profile's declared
 #   `provider` and `floor`, the quota rows from ONE quota-axi --json snapshot,
-#   and the spendPriority argmax over the eligible candidates. The model never
-#   sees quota, catalogs, approvals, `why`, or `use`. With no rules, it returns
+#   and either the spendPriority argmax or select: preference array order.
+#   Preference tries the matched rule then default, skips only known-ineligible
+#   profiles, and discloses skipped reasons and reported reset times (row
+#   resetsAt or linked limiting windows). Each fresh snapshot restores the
+#   preferred profile when eligible again; no reset time is guessed.
+#   The model never sees quota, catalogs, approvals, `why`, or `use`.
+#   With no rules, it returns
 #   a non-clear result so firstmate keeps using the existing intake.
 #   docs/configuration.md "Crew dispatch profiles" owns the declared fields and
 #   "Typed dispatch resolution" owns this tool's operator contract.
@@ -34,9 +39,13 @@
 #     reason: <why the status is not clear>
 #     candidate: <harness>:<model> provider=.. scope=.. remaining=..% spendPriority=.. runway=.. -> eligible | eligible, unranked: <reason> | not eligible: <reason>
 #     profile: --harness <h> [--model <m>] [--effort <e>]     (status clear only)
-#   clear     -> pass the profile line to fm-spawn.sh unless you state a reason to override
+#   clear     -> first eligible preference profile, unique ranked winner, or sole
+#                eligible candidate with unknown quota
+#                and no unverifiable floor; pass the profile line to fm-spawn.sh
+#                unless you state a reason to override (unranked quota is disclosed)
 #   ambiguous -> confidence below the floor; decide as today from the probabilities
-#   escalate  -> the rule requires captain approval, no candidate is rankable, or a genuine tie
+#   escalate  -> captain approval, unverifiable required floors, no eligible candidate,
+#                no rankable winner beyond the sole-unknown exception, or a genuine tie
 #   error     -> API, network, response, or quota-axi failure; decide as today
 #   Every outcome exits 0 so an intake is never blocked by this tool.
 #   Exit 2 only for a usage or configuration error (unreadable brief, an
@@ -161,8 +170,8 @@ rules_err=$(jq -r --argjson verified_harnesses "$VERIFIED_HARNESSES" --arg provi
   elif any((.rules // [])[]; (profiles(.use) | length) == 0) then "each rule needs at least one use profile"
   elif any((.rules // [])[]; has("approval") and .approval != "captain") then "approval must be \"captain\" when present"
   elif any((.rules // [])[]; has("select") and ((.select | type) != "string" or (.select | length) == 0)) then "select must be a non-empty string"
-  elif any((.rules // [])[]; has("select") and .select != "quota-balanced") then
-    "unknown select: " + ([.rules[] | select(has("select") and .select != "quota-balanced") | .select] | unique | join(", "))
+  elif any((.rules // [])[]; has("select") and .select != "quota-balanced" and .select != "preference") then
+    "unknown select: " + ([.rules[] | select(has("select") and .select != "quota-balanced" and .select != "preference") | .select] | unique | join(", "))
   elif any((.rules // [])[]; has("floor") and floor_bad(.floor; true)) then "rule floor needs scope, min_percent 0..100, and provider matching ^[a-z0-9]+(-[a-z0-9]+)*\\z"
   elif any((.rules // [])[] | profiles(.use)[]; profile_bad(.)) then "each use profile needs harness; model, effort, and floor must be well formed, and provider must match ^[a-z0-9]+(-[a-z0-9]+)*\\z when present"
   elif any((.rules // [])[]; duplicate_profiles(profiles(.use))) then "each rule use must not contain duplicate harness, model, and effort profiles"
@@ -264,7 +273,7 @@ command -v quota-axi >/dev/null 2>&1 || emit_error "quota-axi not installed"
 quota-axi --json > "$QUOTA" 2>/dev/null || emit_error "quota-axi --json failed"
 fm_quota_json_valid < "$QUOTA" || emit_error "quota-axi --json returned an invalid snapshot"
 
-# ---- resolution: declared gates + quota evidence + argmax, all in jq ------------
+# ---- resolution: declared gates + quota evidence + selection, all in jq --------
 RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg none_criterion "$DEFAULT_WHEN" --argjson pmap "$PMAP" \
   --slurpfile resp "$RESP_FILE" --slurpfile rules "$RULES" --slurpfile quota "$QUOTA" '
   ($resp[0]) as $r | ($rules[0]) as $cfg | ($quota[0]) as $q | ($r.answers.rule) as $a |
@@ -292,10 +301,21 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg non
     end;
   def evidence($rows):
     $rows | map({scope, status, pct: (.effectivePercentRemaining // null), runway: (.runway.status // null), spendPriority: (.selection.spendPriority // null)});
+  def reset_times($c):
+    [rows($c.provider)[] | select(.scope == $c.scope) |
+      . as $row |
+      ($row.resetsAt // empty),
+      ((($row.limitingWindowIds // []) + [$row.runway.limitingWindowId // empty]) as $ids |
+        (prov($c.provider).windows // [])[] |
+        select(.id as $id | $ids | index($id)) | .resetsAt // empty)
+    ] | unique;
+  def skipped_note($c):
+    "\($c.profile.harness):\($c.profile.model // "-"): \($c.reason)" +
+    (reset_times($c) as $times | if ($times | length) > 0 then " resetsAt=\($times | join(","))" else "" end);
   def evaluate($c):
     (provider_of($c)) as $p |
     if $p == null then {profile: $c, eligible: false, reason: "no provider family for harness \($c.harness); declare provider on the profile"}
-    elif prov($p) == null then {profile: $c, provider: $p, eligible: true, unranked: true, reason: "provider \($p) not in the quota snapshot"}
+    elif prov($p) == null then {profile: $c, provider: $p, eligible: true, unranked: true, unknown: true, reason: "provider \($p) not in the quota snapshot"}
     else
       (applicable($p; ($c.model // ""))) as $rows |
       (evidence($rows)) as $bounds |
@@ -363,11 +383,29 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg non
   elif $sel.escalate then
     $ev + {status: "escalate", reason: $sel.escalate, candidates: ($answer_use | map(evaluate(.)))}
   elif ($sel.use | length) == 0 then $ev + {status: "escalate", reason: "no profiles configured for \($sel.source)", note: $sel.note, candidates: []}
+  elif ($rule.select // "quota-balanced") == "preference" then
+    (if $sel.source == "default" then $sel.use
+     else $sel.use + profiles($cfg.default // null) end | map(evaluate(.))) as $cands |
+    ([$cands | to_entries[] | select(.value.eligible)] | first) as $first |
+    if $first == null then
+      $ev + {status: "escalate", reason: "no eligible preference candidate", candidates: $cands,
+             note: ($sel.note + "; preference order; skipped " + ([$cands[] | skipped_note(.)] | join("; ")))}
+    else
+      $ev + {status: "clear", candidates: $cands, chosen: $first.value,
+             note: ($sel.note + "; preference order" +
+               (if $first.key > 0 then "; skipped " + ([$cands[:$first.key][] | skipped_note(.)] | join("; ")) else "" end) +
+               (if $first.value.unranked then "; selected unranked: " + $first.value.reason + "; quota uncertainty disclosed" else "" end))}
+    end
   else
     ($sel.use | map(evaluate(.))) as $cands |
     ([$cands[] | select(.eligible and ((.unranked // false) | not))]) as $elig |
     ([$cands[] | select(.unranked)]) as $unranked |
-    if ($elig | length) == 0 then $ev + {status: "escalate", reason: "no rankable eligible candidate", note: $sel.note, candidates: $cands}
+    if ($elig | length) == 0 and ($unranked | length) == 1
+       and $unranked[0].eligible and $unranked[0].unknown
+       and (floor_state($unranked[0].profile.floor; $unranked[0].provider) | . == "none" or . == "ok") then
+      $ev + {status: "clear", note: $sel.note, candidates: $cands, chosen: $unranked[0],
+             unranked_note: "sole eligible candidate unranked: \($unranked[0].reason); quota uncertainty disclosed"}
+    elif ($elig | length) == 0 then $ev + {status: "escalate", reason: "no rankable eligible candidate", note: $sel.note, candidates: $cands}
     else
       ($elig | max_by(.spendPriority)) as $best |
       ([$elig[] | select(.spendPriority == $best.spendPriority)] | length) as $ties |
