@@ -1,0 +1,3 @@
+iterations=150 survivors=0 stale-locks=0 leaked-marker-lock-owner-dirs=9 parse-errors=0
+watcher output uniq:
+     49 check: rearm-resurface

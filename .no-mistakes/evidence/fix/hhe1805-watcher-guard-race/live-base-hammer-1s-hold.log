@@ -1,0 +1,5 @@
+first watcher pid=2324539 lock=/tmp/hhe1805-basehome/state/.watch.lock.owner.VouiMT pid-file=2324539
+watcher restarts performed=156
+hook evaluations=300 allowed=132 blocked-during-genuine-gap=168 blocked-while-lock-held-throughout(FALSE-BLIND)=0 other=0 evaluations-with-lock-held-throughout=107
+watcher stdout/stderr (uniq):
+    156 check: rearm-resurface

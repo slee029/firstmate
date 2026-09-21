@@ -1,0 +1,7 @@
+first watcher pid=1872037 lock=/tmp/hhe1805-fixed/state/.watch.lock.owner.PbwEol pid-file=1872037
+watcher restarts performed=248
+hook evaluations=400 allowed=277 blocked-during-genuine-gap=123 blocked-while-lock-held-throughout(FALSE-BLIND)=0 other=0 evaluations-with-lock-held-throughout=165
+watcher stdout/stderr (uniq):
+      1 check: rearm-resurface
+      2 /tmp/hhe1805-fixed/bin/fm-wake-lib.sh: /tmp/hhe1805-fixed/bin/fm-watch.sh: line 39: unexpected EOF while looking for matching `)'
+      2 /tmp/hhe1805-fixed/bin/fm-wake-lib.sh: trap: line 2: unexpected EOF while looking for matching `)'

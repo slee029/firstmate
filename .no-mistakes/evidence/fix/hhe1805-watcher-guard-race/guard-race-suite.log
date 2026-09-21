@@ -1,0 +1,9 @@
+ok - staged publication shows zero partial generations in 139 samples
+ok - legacy staggered publication is observable (103 partials in 124 samples)
+ok - a generation flip at every read position inside a guard evaluation yields zero false-BLINDs
+ok - dead watcher still blocks with a named predicate reason
+ok - staged acquire publishes a complete lock generation
+ok - the published pid is verified, never truncated and rewritten
+ok - staged owner files reach only the published watch lock, not the nested steal or marker locks
+ok - a retain-evidence exit leaves the held lock and the malformed marker untouched
+ok - absent-lock retry rides a republish inside its 3-retry budget and blocks an absence that outlasts it
