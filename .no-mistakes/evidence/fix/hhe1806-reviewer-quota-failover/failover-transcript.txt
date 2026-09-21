@@ -1,0 +1,69 @@
+### S1 codex exhausted_now -> fail over to claude opus, switch recorded
+$ bin/fm-reviewer-choose.sh --author pi:openai-codex/gpt-6 --snapshot /home/seung/.no-mistakes/evidence/01M31YE7RHB4JC5FYG96SE5H10/quota-exhausted-codex.json --candidate codex:gpt-6 --candidate claude:claude-opus-5 --record /home/seung/.no-mistakes/evidence/01M31YE7RHB4JC5FYG96SE5H10/reviewer-switch.record
+skipped: codex:gpt-6 author
+reviewer: claude claude-opus-5
+exit=0
+
+### S2 everything exhausted or author -> truthful park, exit 1
+$ bin/fm-reviewer-choose.sh --author pi:anthropic/claude-sonnet-5 --snapshot /home/seung/.no-mistakes/evidence/01M31YE7RHB4JC5FYG96SE5H10/quota-all-exhausted.json --candidate codex:gpt-6 --candidate claude:claude-opus-5 --candidate claude:claude-sonnet-5 --record /home/seung/.no-mistakes/evidence/01M31YE7RHB4JC5FYG96SE5H10/reviewer-switch.record
+skipped: codex:gpt-6 quota-ineligible
+skipped: claude:claude-opus-5 quota-ineligible
+skipped: claude:claude-sonnet-5 author
+park: no eligible reviewer (codex:gpt-6=quota-ineligible, claude:claude-opus-5=quota-ineligible, claude:claude-sonnet-5=author)
+exit=1
+
+### S3 adversarial: crew-dispatch example pair claude:claude-sonnet-5 vs pi:anthropic/claude-sonnet-5 must be same author
+$ bin/fm-reviewer-choose.sh --author claude:claude-sonnet-5 --snapshot /home/seung/.no-mistakes/evidence/01M31YE7RHB4JC5FYG96SE5H10/quota-exhausted-codex.json --candidate pi:anthropic/claude-sonnet-5 --candidate pi:anthropic/claude-opus-5
+skipped: pi:anthropic/claude-sonnet-5 author
+reviewer: pi anthropic/claude-opus-5
+exit=0
+
+### S4 approval gate: needs-approval blocks until --approved
+$ bin/fm-reviewer-choose.sh --author grok:grok-4 --snapshot /home/seung/.no-mistakes/evidence/01M31YE7RHB4JC5FYG96SE5H10/quota-exhausted-codex.json --candidate claude:claude-opus-5 --needs-approval claude:claude-opus-5
+skipped: claude:claude-opus-5 needs-approval
+park: no eligible reviewer (claude:claude-opus-5=needs-approval)
+exit=1
+
+$ bin/fm-reviewer-choose.sh --author grok:grok-4 --snapshot /home/seung/.no-mistakes/evidence/01M31YE7RHB4JC5FYG96SE5H10/quota-exhausted-codex.json --candidate claude:claude-opus-5 --needs-approval claude:claude-opus-5 --approved claude:claude-opus-5
+reviewer: claude claude-opus-5
+exit=0
+
+### S5 adversarial: unmeasured cursor is NOT called exhausted when codex is exhausted
+$ bin/fm-reviewer-choose.sh --author grok:grok-4 --snapshot /home/seung/.no-mistakes/evidence/01M31YE7RHB4JC5FYG96SE5H10/quota-exhausted-codex.json --candidate codex:gpt-6 --candidate cursor:cursor-grok-4.5-high
+skipped: codex:gpt-6 quota-ineligible
+deferred: cursor:cursor-grok-4.5-high quota-unmeasured (provider cursor exposes no measured quota for cursor-grok-4.5-high)
+unmeasured: cursor:cursor-grok-4.5-high provider cursor exposes no measured quota for cursor-grok-4.5-high
+reviewer: cursor cursor-grok-4.5-high
+exit=0
+
+### S6 adversarial: positional candidate and stdin snapshot rejected; bad schema is error not park
+$ bin/fm-reviewer-choose.sh --author grok:grok-4 --snapshot /home/seung/.no-mistakes/evidence/01M31YE7RHB4JC5FYG96SE5H10/quota-exhausted-codex.json claude:claude-opus-5
+error: unknown option: claude:claude-opus-5
+exit=2
+
+error: --snapshot <path> is required
+exit=2
+$ bin/fm-reviewer-choose.sh --author grok:grok-4 --snapshot /home/seung/.no-mistakes/evidence/01M31YE7RHB4JC5FYG96SE5H10/bad.json --candidate claude:claude-opus-5
+error: quota snapshot rejected: unsupported quota-axi schema version: 4
+  
+exit=2
+
+### S7 bare-harness author harness -> fail closed as author
+$ bin/fm-reviewer-choose.sh --author claude:claude-opus-5 --snapshot /home/seung/.no-mistakes/evidence/01M31YE7RHB4JC5FYG96SE5H10/quota-exhausted-codex.json --candidate claude --candidate pi:openai-codex/gpt-6
+skipped: claude author
+reviewer: pi openai-codex/gpt-6
+exit=0
+
+### record file
+reviewer-choose 1790021218 selected claude claude-opus-5 skipped codex:gpt-6=author
+reviewer-choose 1790021218 selected cursor cursor-grok unmeasured cursor:cursor-grok skipped claude:claude-opus-5=author, pi:anthropic/claude-opus-5=author
+reviewer-choose 1790021219 selected claude default skipped 
+reviewer-choose 1790021239 selected claude claude-opus-5 skipped codex:gpt-6=author
+reviewer-choose 1790021239 parked skipped codex:gpt-6=quota-ineligible, claude:claude-opus-5=quota-ineligible, claude:claude-sonnet-5=author
+### S1b pure quota failover: non-author codex:gpt-6 is exhausted_now -> claude opus selected, switch recorded
+$ bin/fm-reviewer-choose.sh --author grok:grok-4 --snapshot quota-exhausted-codex.json --candidate codex:gpt-6 --candidate claude:claude-opus-5 --record ...
+skipped: codex:gpt-6 quota-ineligible
+reviewer: claude claude-opus-5
+exit=0
+### last record line
+reviewer-choose 1790021252 selected claude claude-opus-5 skipped codex:gpt-6=quota-ineligible

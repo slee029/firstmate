@@ -1,0 +1,6 @@
+reviewer-choose 1790021218 selected claude claude-opus-5 skipped codex:gpt-6=author
+reviewer-choose 1790021218 selected cursor cursor-grok unmeasured cursor:cursor-grok skipped claude:claude-opus-5=author, pi:anthropic/claude-opus-5=author
+reviewer-choose 1790021219 selected claude default skipped 
+reviewer-choose 1790021239 selected claude claude-opus-5 skipped codex:gpt-6=author
+reviewer-choose 1790021239 parked skipped codex:gpt-6=quota-ineligible, claude:claude-opus-5=quota-ineligible, claude:claude-sonnet-5=author
+reviewer-choose 1790021252 selected claude claude-opus-5 skipped codex:gpt-6=quota-ineligible

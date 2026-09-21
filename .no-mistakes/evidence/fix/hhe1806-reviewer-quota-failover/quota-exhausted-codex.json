@@ -1,0 +1,6 @@
+{"generatedAt":"2026-09-21T20:00:00Z","schemaVersion":5,"providers":[
+ {"provider":"codex","windows":[],"quotaSemantics":{"status":"known","effectiveAvailability":[{"scope":"all_models","status":"known","effectivePercentRemaining":0,"runway":{"status":"exhausted_now"}}]}},
+ {"provider":"claude","windows":[],"quotaSemantics":{"status":"known","effectiveAvailability":[{"scope":"all_models","status":"known","effectivePercentRemaining":62,"runway":{"status":"through_reset"}}]}},
+ {"provider":"pi","windows":[],"quotaSemantics":{"status":"known","effectiveAvailability":[{"scope":"all_models","status":"known","effectivePercentRemaining":40,"runway":{"status":"through_reset"}}]}},
+ {"provider":"cursor","windows":[],"quotaSemantics":{"status":"unknown","effectiveAvailability":[]}}
+]}

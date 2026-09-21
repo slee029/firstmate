@@ -1,0 +1,24 @@
+bin: ~/.local/bin/quota-axi
+description: Report local agent-provider quota windows for routing-aware agents
+generatedAt: "2026-09-21T20:06:49.849Z"
+quota[3]{provider,scope,effectivePercentRemaining,spendPriority,runway,confidence,limitedBy,resetsAt}:
+  claude,all_models,34,-0.6619,projected_exhaustion,established,five_hour,"2026-09-21T21:40:00.192801+00:00"
+  claude,"model:fable",34,-0.8891,projected_exhaustion,established,five_hour,"2026-09-21T21:40:00.192801+00:00"
+  codex,all_models,97,-2.7595,projected_exhaustion,early,weekly,"2026-09-28T18:45:55.000Z"
+exhaustion[3]{provider,scope,usableRunwaySeconds,projectedExhaustedAt,limitingWindowId}:
+  claude,all_models,299484,"2026-09-25T07:18:13.796Z",seven_day
+  claude,"model:fable",226581,"2026-09-24T11:03:11.180Z","model:fable"
+  codex,all_models,156973,"2026-09-23T15:43:03.300Z",weekly
+attention[10]{provider,scope,kind,detail,remedy}:
+  codex,all,degraded_source,oauth · Codex sign-in required,none
+  cursor,all,auth_required,Cursor sign-in required,none
+  copilot,all,auth_required,GitHub Copilot sign-in required,none
+  grok,all,unavailable,Grok model access available; quota unavailable (auth usable),none
+  kimi,all,auth_required,kimi_credential_unavailable,none
+  zai,all,auth_required,zai_credential_unavailable,none
+  agy,all,stale,"last refreshed 2026-09-14T01:30:30.204Z · Antigravity/agy is not running",none
+  agy,all,unresolved_windows,gemini_5h + gemini_weekly + claude_gpt_5h + claude_gpt_weekly,none
+  alibaba,all,unavailable,bl_cli_unavailable,none
+  opencode-go,all,auth_required,provider_auth_rejected,none
+help[1]:
+  Run `quota-axi --full` for windows, pace, reserve, and account evidence

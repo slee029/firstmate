@@ -1,0 +1,22 @@
+### LIVE quota-axi snapshot (claude 34% projected_exhaustion, codex 97%, cursor unmeasured)
+$ bin/fm-reviewer-choose.sh --author codex:gpt-6 --snapshot /home/seung/.no-mistakes/evidence/01M31YE7RHB4JC5FYG96SE5H10/quota-axi-live.toon --candidate codex:gpt-6 --candidate claude:claude-opus-5 --candidate cursor:cursor-grok --record /home/seung/.no-mistakes/evidence/01M31YE7RHB4JC5FYG96SE5H10/reviewer-switch.record
+skipped: codex:gpt-6 author
+reviewer: claude claude-opus-5
+exit=0
+
+$ bin/fm-reviewer-choose.sh --author claude:claude-opus-5 --snapshot /home/seung/.no-mistakes/evidence/01M31YE7RHB4JC5FYG96SE5H10/quota-axi-live.toon --candidate claude:claude-opus-5 --candidate pi:anthropic/claude-opus-5 --candidate cursor:cursor-grok --record /home/seung/.no-mistakes/evidence/01M31YE7RHB4JC5FYG96SE5H10/reviewer-switch.record
+skipped: claude:claude-opus-5 author
+skipped: pi:anthropic/claude-opus-5 author
+deferred: cursor:cursor-grok quota-unmeasured (provider cursor exposes no measured quota for cursor-grok)
+unmeasured: cursor:cursor-grok provider cursor exposes no measured quota for cursor-grok
+reviewer: cursor cursor-grok
+exit=0
+
+$ bin/fm-reviewer-choose.sh --author grok:grok-4 --snapshot /home/seung/.no-mistakes/evidence/01M31YE7RHB4JC5FYG96SE5H10/quota-axi-live.toon --candidate claude --candidate codex:gpt-6 --record /home/seung/.no-mistakes/evidence/01M31YE7RHB4JC5FYG96SE5H10/reviewer-switch.record
+reviewer: claude default
+exit=0
+
+### record file
+reviewer-choose 1790021218 selected claude claude-opus-5 skipped codex:gpt-6=author
+reviewer-choose 1790021218 selected cursor cursor-grok unmeasured cursor:cursor-grok skipped claude:claude-opus-5=author, pi:anthropic/claude-opus-5=author
+reviewer-choose 1790021219 selected claude default skipped 
