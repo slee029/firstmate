@@ -33,6 +33,7 @@ Authoritative multi-provider routing - including provider discovery from the har
 Use it only when the brief already fixed the candidate order and every candidate's provider is the harness's primary family.
 It does not replace the reasoning-class, runway-feasibility, or authentication gates above.
 Firstmate can optionally arm `bin/fm-procevent-quota.sh` for a recurring mid-task check that wakes when the tracked provider drops below its configured threshold or its runway becomes `exhausted_now`.
+
 ## Reviewer selection at review setup
 
 The canonical helper for choosing the reviewer seat of a validation review is `bin/fm-reviewer-choose.sh`; use it whenever review setup pins a reviewer and the review rule or reviewer configuration lists more than one candidate.
