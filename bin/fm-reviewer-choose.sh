@@ -38,8 +38,7 @@
 # listed in --needs-approval unless it is also listed in --approved, both
 # matched on the exact harness:model pin, so a reviewer that needs an explicit
 # captain decision is never selected silently. The quota gate probes
-# bin/fm-quota-choose.sh against the same snapshot, so quota eligibility stays
-# owned by the existing ordered-fallback machinery: a candidate is
+# the shared effective-quota lookup against the same snapshot: a candidate is
 # quota-eligible only when its applicable quota has a known effective percent
 # remaining greater than zero and no exhausted_now runway. When the candidate
 # declares @<provider>, the probe is keyed to that provider's rows (its
@@ -88,7 +87,6 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CHOOSE="$SCRIPT_DIR/fm-quota-choose.sh"
 
 # shellcheck source=bin/fm-quota-axi-lib.sh
 . "$SCRIPT_DIR/fm-quota-axi-lib.sh"
@@ -297,23 +295,26 @@ probe_target() {
   return 1
 }
 
-[ -x "$CHOOSE" ] || die "quota chooser not executable: $CHOOSE"
-
-# unmeasured_reason <probe target> prints why a failed chooser probe carries
-# no measured evidence, or nothing when the probe failed on measured
-# exhaustion. It applies the same provider/scope rule the chooser applied.
-unmeasured_reason() {
-  local harness=${1%%:*} model provider scope_model lane status
+quota_status() {
+  local harness=${1%%:*} model provider scope_model lane original=$2
   model=$(pin_model "$1")
-  provider=$(fm_quota_provider_for_harness "$harness" "$model") || return 0
+  provider=$(fm_quota_provider_for_harness "$harness" "$model") || return 1
   scope_model=${model:-default}
   [ "$harness" != omp ] || scope_model=${model#*/}
-  lane=$(jq -rn --arg h "$harness" --arg m "${model:-default}" "$FM_QUOTA_ROW_JQ"'quota_lane($h; $m)')
-  status=$(printf '%s\n' "$QUOTA_JSON" \
+  lane=$(jq -rn --arg h "${original%%:*}" --arg m "$(pin_model "$original")" "$FM_QUOTA_ROW_JQ"'quota_lane($h; $m)')
+  printf '%s\n' "$QUOTA_JSON" \
     | fm_quota_effective_for_provider_model "$provider" "$scope_model" "$lane" \
-    | jq -r 'if (.runway.status // "") == "exhausted_now" then "exhausted" else (.status // "unknown") end')
-  [ "$status" = unknown ] || return 0
-  printf 'provider %s exposes no measured quota for %s\n' "$provider" "$scope_model"
+    | jq -r 'if (.runway.status // "") == "exhausted_now" then "ineligible"
+      elif (.status // "unknown") == "unknown" then "unknown"
+      elif (.effectivePercentRemaining | type) == "number" and .effectivePercentRemaining > 0 then "eligible"
+      else "ineligible" end' \
+    | while read -r status; do
+        if [ "$status" = unknown ]; then
+          printf 'provider %s exposes no measured quota for %s\n' "$provider" "$scope_model"
+        else
+          printf '%s\n' "$status"
+        fi
+      done
 }
 
 SKIPPED=()
@@ -335,17 +336,16 @@ for c in "${CANDIDATES[@]}"; do
     reason=needs-approval
   elif ! target=$(probe_target "$c"); then
     why=$target
-  elif probe_out=$("$CHOOSE" --snapshot "$SNAPSHOT_SOURCE" --candidate "$target" 2>&1); then
-    selected="${pin%%:*} $(pin_model "$pin")"
-    break
   else
-    rc=$?
-    if [ "$rc" -eq 2 ]; then
-      printf 'error: quota snapshot rejected for %s: %s\n' "$c" "$probe_out" >&2
-      exit 2
-    fi
-    why=$(unmeasured_reason "$target")
-    [ -n "$why" ] || reason=quota-ineligible
+    status=$(quota_status "$target" "$pin")
+    case "$status" in
+      eligible)
+        selected="${pin%%:*} $(pin_model "$pin")"
+        break
+        ;;
+      ineligible) reason=quota-ineligible ;;
+      *) why=$status ;;
+    esac
   fi
   if [ -n "$why" ]; then
     DEFERRED+=("$c")

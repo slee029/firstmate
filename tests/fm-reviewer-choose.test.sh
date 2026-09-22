@@ -349,3 +349,37 @@ if call_choose --author grok:grok-4 --snapshot "$MALFORMED" \
   fail "malformed snapshot unexpectedly succeeded"
 fi
 ok "rejected snapshots abort as errors, not parks"
+
+for order in forward reverse; do
+  for state in exhausted healthy unknown missing; do
+    ACCOUNT_FIXTURE="$LAB/accounts.json"
+    jq --arg state "$state" --arg order "$order" '
+      .schemaVersion = 6 |
+      .providers = [
+        (.providers[1] | .accountKey = "default"),
+        (.providers[1] | .provider = "codex" | .accountKey = "codex-home"),
+        (.providers[0] | .accountKey = "openai-codex" |
+          if $state == "healthy" then
+            .quotaSemantics.effectiveAvailability[0].effectivePercentRemaining = 50 |
+            .quotaSemantics.effectiveAvailability[0].runway.status = "through_reset"
+          elif $state == "unknown" then
+            .quotaSemantics = {status: "unknown", effectiveAvailability: []}
+          else . end)
+      ] |
+      if $state == "missing" then .providers |= map(select(.accountKey != "openai-codex")) else . end |
+      if $order == "reverse" then .providers |= reverse else . end
+    ' "$FIXTURE" > "$ACCOUNT_FIXTURE"
+    out=$(call_choose --author grok:grok-4 --snapshot "$ACCOUNT_FIXTURE" \
+      --candidate pi:openai-codex/gpt-6-astra@codex --candidate claude:claude-opus-5); rc=$?
+    [ "$rc" -eq 0 ] || fail "account $order/$state: exit $rc with '$out'"
+    case "$state" in
+      exhausted) expected="skipped: pi:openai-codex/gpt-6-astra@codex quota-ineligible
+reviewer: claude claude-opus-5" ;;
+      healthy) expected="reviewer: pi openai-codex/gpt-6-astra" ;;
+      *) expected="deferred: pi:openai-codex/gpt-6-astra@codex quota-unmeasured (provider codex exposes no measured quota for gpt-6-astra)
+reviewer: claude claude-opus-5" ;;
+    esac
+    [ "$out" = "$expected" ] || fail "account $order/$state: expected '$expected', got '$out'"
+  done
+done
+ok "declared providers preserve the original account lane regardless of row order"
