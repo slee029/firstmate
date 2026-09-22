@@ -1,3 +1,5 @@
+
+=== claude ===
 ================================================================================
 SUPERVISION OPERATING INSTRUCTIONS - primary harness: claude
 ================================================================================
@@ -36,6 +38,8 @@ The watcher itself remains `bin/fm-watch.sh`, and `bin/fm-watch-arm.sh` remains 
 Re-arm attaches to an existing healthy cycle when one is already present and follows its verified successor chain.
 See [`watcher-continuity.md`](../watcher-continuity.md) for the arm-layer successor and clean-close failure contract and the Claude ownership model.
 
+
+=== codex ===
 ================================================================================
 SUPERVISION OPERATING INSTRUCTIONS - primary harness: codex
 ================================================================================
@@ -51,7 +55,7 @@ When this session owns supervision and away mode is not active:
 1. Drain first with `bin/fm-wake-drain.sh`.
    After handling all emitted wakes and reconciling open decisions and unread status lines, run the exact `--ack-through` command printed as `WAKE_ACK_REQUIRED`; until then the work remains durable for idempotent re-handling after interruption.
    After that acknowledgement, run AGENTS.md section 8's admission step and emit its one-line summary in the same turn.
-2. Source `/home/seung/.no-mistakes/worktrees/471db19625ab/01M353T66X3EMSXN6Z6J709RR1/config/x-mode.env` first when Relay is active.
+2. Source `/home/seung/.no-mistakes/worktrees/471db19625ab/01M357NSVJFNKRKJP4VMYDQCTQ/config/x-mode.env` first when Relay is active.
 3. First cycle: run one foreground watcher checkpoint with `bin/fm-watch-checkpoint.sh --seconds "${FM_CODEX_WATCH_CHECKPOINT:-180}"`.
 4. Ordinary wake: if the command prints `signal:`, `stale:`, `check:`, or `heartbeat`, drain queued wakes, handle that wake, then start the next checkpoint.
 5. If the command prints `checkpoint:` or exits 124 with no wake, drain queued wakes anyway, process any queued user message now visible to Codex, then start the next checkpoint.
@@ -63,6 +67,8 @@ When this session owns supervision and away mode is not active:
 Codex cannot reason while a foreground tool call is running.
 The bounded checkpoint returns control regularly so user messages and queued wakes can be handled without relying on background-task wake semantics.
 
+
+=== cursor ===
 ================================================================================
 SUPERVISION OPERATING INSTRUCTIONS - primary harness: cursor
 ================================================================================
@@ -105,6 +111,8 @@ Exit status 2 is a silent no-op on Cursor's `stop` step, so this adapter never b
 That document owns the double loop bound, the supersession contract, the Pi-host stand-down, and the compatibility limits, including that a Cursor primary must be launched with `--trust` for its project hooks to load at all.
 Cursor's `beforeSubmitPrompt` step fires once for a real captain message and not for hook-driven follow-ups, so it could invalidate the baton at the start of this window, but that registration is deliberately deferred alongside the `preCompact` surface.
 
+
+=== grok ===
 ================================================================================
 SUPERVISION OPERATING INSTRUCTIONS - primary harness: grok
 ================================================================================
@@ -120,11 +128,11 @@ When this session owns supervision and away mode is not active:
 1. Drain first with `bin/fm-wake-drain.sh`.
    After handling all emitted wakes and reconciling open decisions and unread status lines, run the exact `--ack-through` command printed as `WAKE_ACK_REQUIRED`; until then the work remains durable for idempotent re-handling after interruption.
    After that acknowledgement, run AGENTS.md section 8's admission step and emit its one-line summary in the same turn.
-2. Source `/home/seung/.no-mistakes/worktrees/471db19625ab/01M353T66X3EMSXN6Z6J709RR1/config/x-mode.env` first when Relay is active.
+2. Source `/home/seung/.no-mistakes/worktrees/471db19625ab/01M357NSVJFNKRKJP4VMYDQCTQ/config/x-mode.env` first when Relay is active.
 3. First cycle: arm with Grok's tracked background tool, as its own call:
 
    `run_terminal_command` with `background: true` on:
-   `[ -f '/home/seung/.no-mistakes/worktrees/471db19625ab/01M353T66X3EMSXN6Z6J709RR1/config/x-mode.env' ] && . '/home/seung/.no-mistakes/worktrees/471db19625ab/01M353T66X3EMSXN6Z6J709RR1/config/x-mode.env'; exec bin/fm-watch-arm.sh`
+   `[ -f '/home/seung/.no-mistakes/worktrees/471db19625ab/01M357NSVJFNKRKJP4VMYDQCTQ/config/x-mode.env' ] && . '/home/seung/.no-mistakes/worktrees/471db19625ab/01M357NSVJFNKRKJP4VMYDQCTQ/config/x-mode.env'; exec bin/fm-watch-arm.sh`
 
 4. Trust only the arm's one-line status.
 5. `watcher: started ...` or `watcher: attached ...` means a live cycle exists.
@@ -155,6 +163,8 @@ After any forced continuation, arm the watcher with the background protocol abov
 Interactive TUI primary sessions are the supported supervision host.
 Headless `grok -p` may wait for background process exit but does not reliably surface full auto-wake model output; do not run the primary firstmate as a one-shot headless process.
 
+
+=== omp ===
 ================================================================================
 SUPERVISION OPERATING INSTRUCTIONS - primary harness: omp
 ================================================================================
@@ -171,7 +181,7 @@ When this session owns supervision and away mode is not active:
    After handling all emitted wakes and reconciling open decisions and unread status lines, run the exact `--ack-through` command printed as `WAKE_ACK_REQUIRED`; until then the work remains durable for idempotent re-handling after interruption.
    After that acknowledgement, run AGENTS.md section 8's admission step and emit its one-line summary in the same turn.
 2. Confirm the omp primary auto-loaded both project extensions from `.omp/extensions/`; omp has no project-trust gate, so a plain `omp` started with this home as its working directory loads them with no dialog.
-   If `bin/fm-session-start.sh` reported the omp extensions as not loaded, restart omp inside this home; pass `-e /home/seung/.no-mistakes/worktrees/471db19625ab/01M353T66X3EMSXN6Z6J709RR1/.omp/extensions/fm-primary-turnend-guard.ts -e /home/seung/.no-mistakes/worktrees/471db19625ab/01M353T66X3EMSXN6Z6J709RR1/.omp/extensions/fm-primary-omp-watch.ts` only when omp must start from another directory, because omp loads a file named both ways twice.
+   If `bin/fm-session-start.sh` reported the omp extensions as not loaded, restart omp inside this home; pass `-e /home/seung/.no-mistakes/worktrees/471db19625ab/01M357NSVJFNKRKJP4VMYDQCTQ/.omp/extensions/fm-primary-turnend-guard.ts -e /home/seung/.no-mistakes/worktrees/471db19625ab/01M357NSVJFNKRKJP4VMYDQCTQ/.omp/extensions/fm-primary-omp-watch.ts` only when omp must start from another directory, because omp loads a file named both ways twice.
 3. Initial process cycle only: make the one required `fm_watch_arm_omp` call; if startup already owned the fleet lock, this is an ownership-based no-op.
    Use `/fm-watch-arm-omp` only as a human-entered fallback.
    Never run `bin/fm-watch-arm.sh` through omp's bash tool because that foreground arm can wedge the agent and bypasses extension-owned cleanup.
@@ -185,17 +195,19 @@ When this session owns supervision and away mode is not active:
 10. Missing, failed, or unhealthy cycle only: if a later notification explicitly reports one of those repair conditions, drain queued wakes, inspect the failure text, call `fm_watch_arm_omp`, and restart omp inside this home if the extensions are not loaded.
    A redundant call while the extension owns an arm child or scheduled retry is an ownership-based `watcher: unchanged` no-op, not an independent health claim.
 11. Never use shell `&` for watcher supervision.
-   The arm mechanism above is extension-owned, not a model tool call, but a manual recovery probe that backgrounds, pipes, or bundles the arm is denied automatically by the pre-tool seatbelt (`bin/fm-arm-pretool-check.sh`, wired into the turn-end guard extension at `/home/seung/.no-mistakes/worktrees/471db19625ab/01M353T66X3EMSXN6Z6J709RR1/.omp/extensions/fm-primary-turnend-guard.ts`).
+   The arm mechanism above is extension-owned, not a model tool call, but a manual recovery probe that backgrounds, pipes, or bundles the arm is denied automatically by the pre-tool seatbelt (`bin/fm-arm-pretool-check.sh`, wired into the turn-end guard extension at `/home/seung/.no-mistakes/worktrees/471db19625ab/01M357NSVJFNKRKJP4VMYDQCTQ/.omp/extensions/fm-primary-turnend-guard.ts`).
 
-The turn-end guard on omp is structural, not advisory: `/home/seung/.no-mistakes/worktrees/471db19625ab/01M353T66X3EMSXN6Z6J709RR1/.omp/extensions/fm-primary-turnend-guard.ts` answers omp's blocking `session_stop` hook, and when `bin/fm-turnend-guard.sh` returns 2 it forces one continuation carrying the guard text, bounded to one per turn by the `stop_hook_active` flag omp sets on the continuation's own stop.
+The turn-end guard on omp is structural, not advisory: `/home/seung/.no-mistakes/worktrees/471db19625ab/01M357NSVJFNKRKJP4VMYDQCTQ/.omp/extensions/fm-primary-turnend-guard.ts` answers omp's blocking `session_stop` hook, and when `bin/fm-turnend-guard.sh` returns 2 it forces one continuation carrying the guard text, bounded to one per turn by the `stop_hook_active` flag omp sets on the continuation's own stop.
 An interrupted turn never raises `session_stop`, so a supervisor-initiated interrupt is not guarded; `bin/fm-control.sh` owns that postcondition.
 
 The Pi supervision branch (`docs/pi-supervision-branch.md`) is out of scope for the omp primary: every actionable wake is delivered to this conversation, exactly as on Claude, and the lease, outcome-store, and `fm_branch_processed` contracts do not apply here.
 
-The turn-end guard extension lives at `/home/seung/.no-mistakes/worktrees/471db19625ab/01M353T66X3EMSXN6Z6J709RR1/.omp/extensions/fm-primary-turnend-guard.ts`.
-The watcher extension lives at `/home/seung/.no-mistakes/worktrees/471db19625ab/01M353T66X3EMSXN6Z6J709RR1/.omp/extensions/fm-primary-omp-watch.ts`.
+The turn-end guard extension lives at `/home/seung/.no-mistakes/worktrees/471db19625ab/01M357NSVJFNKRKJP4VMYDQCTQ/.omp/extensions/fm-primary-turnend-guard.ts`.
+The watcher extension lives at `/home/seung/.no-mistakes/worktrees/471db19625ab/01M357NSVJFNKRKJP4VMYDQCTQ/.omp/extensions/fm-primary-omp-watch.ts`.
 Both are tracked, project-local `.omp/extensions/*.ts` files that omp auto-discovers from this home with no trust dialog; `bin/fm-session-start.sh` reports when the running omp session has not loaded both required extensions.
 
+
+=== opencode ===
 ================================================================================
 SUPERVISION OPERATING INSTRUCTIONS - primary harness: opencode
 ================================================================================
@@ -224,6 +236,8 @@ When this session owns supervision and away mode is not active:
 OpenCode's persistent TUI plugin runtime is the wake mechanism.
 The plugin applies in the main primary checkout and a secondmate's own home, and stays silent only in child crewmate and scout worktrees.
 
+
+=== pi ===
 ================================================================================
 SUPERVISION OPERATING INSTRUCTIONS - primary harness: pi
 ================================================================================
@@ -239,7 +253,7 @@ When this session owns supervision, in either posture:
 1. Drain first with `bin/fm-wake-drain.sh`.
    After handling all emitted wakes and reconciling open decisions and unread status lines, run the exact `--ack-through` command printed as `WAKE_ACK_REQUIRED`; until then the work remains durable for idempotent re-handling after interruption.
    After that acknowledgement, run AGENTS.md section 8's admission step and emit its one-line summary in the same turn.
-2. Confirm the Pi primary auto-loaded both project extensions (plain `pi` or `pi-signed`, after approving project trust once per clone); if not, restart the selected executable with `-e /home/seung/.no-mistakes/worktrees/471db19625ab/01M353T66X3EMSXN6Z6J709RR1/.pi/extensions/fm-primary-turnend-guard.ts -e /home/seung/.no-mistakes/worktrees/471db19625ab/01M353T66X3EMSXN6Z6J709RR1/.pi/extensions/fm-primary-pi-watch.ts` as a trust-free fallback.
+2. Confirm the Pi primary auto-loaded both project extensions (plain `pi` or `pi-signed`, after approving project trust once per clone); if not, restart the selected executable with `-e /home/seung/.no-mistakes/worktrees/471db19625ab/01M357NSVJFNKRKJP4VMYDQCTQ/.pi/extensions/fm-primary-turnend-guard.ts -e /home/seung/.no-mistakes/worktrees/471db19625ab/01M357NSVJFNKRKJP4VMYDQCTQ/.pi/extensions/fm-primary-pi-watch.ts` as a trust-free fallback.
 3. Initial process cycle only: make the one required `fm_watch_arm_pi` call; if startup already owned the fleet lock, this is an ownership-based no-op.
    Use `/fm-watch-arm-pi` only as a human-entered fallback.
    Never run `bin/fm-watch-arm.sh` through Pi's bash tool because that foreground arm can wedge the agent and bypasses extension-owned cleanup.
@@ -253,7 +267,7 @@ When this session owns supervision, in either posture:
 10. Missing, failed, or unhealthy cycle only: if a later notification explicitly reports one of those repair conditions, drain queued wakes, inspect the failure text, call `fm_watch_arm_pi`, and restart the selected Pi-family executable with both extensions loaded if needed.
    A redundant call while the extension owns an arm child or scheduled retry is an ownership-based `watcher: unchanged` no-op, not an independent health claim.
 11. Never use shell `&` for watcher supervision.
-   The arm mechanism above is extension-owned, not a model tool call, but a manual recovery probe that backgrounds, pipes, or bundles the arm is denied automatically by the PreToolUse seatbelt (`bin/fm-arm-pretool-check.sh`, wired into the turn-end guard extension at `/home/seung/.no-mistakes/worktrees/471db19625ab/01M353T66X3EMSXN6Z6J709RR1/.pi/extensions/fm-primary-turnend-guard.ts`).
+   The arm mechanism above is extension-owned, not a model tool call, but a manual recovery probe that backgrounds, pipes, or bundles the arm is denied automatically by the PreToolUse seatbelt (`bin/fm-arm-pretool-check.sh`, wired into the turn-end guard extension at `/home/seung/.no-mistakes/worktrees/471db19625ab/01M357NSVJFNKRKJP4VMYDQCTQ/.pi/extensions/fm-primary-turnend-guard.ts`).
 
 The supervision branch is default-on (docs/pi-supervision-branch.md): whenever this session owns the fleet lock, the watcher extension hands eligible task-local rows from ordinary actionable wakes, plus selected fleet-wide heartbeat reviews, to the in-process supervision branch while main-only rows remain queued for this conversation.
 While the away-posture record `state/.afk-contract` exists the branch takes every row instead, this conversation receives no processing request, and main's standing authority relocates to the branch through the guarded scripts; a wake the branch cannot take and every watcher-failure alarm still reach this conversation, and the first run boundary after the record is archived presents what accumulated (docs/pi-supervision-branch.md "Postures").
@@ -271,10 +285,65 @@ Treat the merged fleet event as already handled for fleet operations: MAIN must 
 Separately, MAIN applies judgment about whether and how to surface, summarize, reference, or incorporate a merged sailboat outcome in the captain conversation; event ownership does not decide the conversational treatment.
 Read the durable outcome store with the fm_branch_outcomes tool when the captain asks what happened.
 
-The turn-end guard extension lives at `/home/seung/.no-mistakes/worktrees/471db19625ab/01M353T66X3EMSXN6Z6J709RR1/.pi/extensions/fm-primary-turnend-guard.ts`.
-The watcher extension lives at `/home/seung/.no-mistakes/worktrees/471db19625ab/01M353T66X3EMSXN6Z6J709RR1/.pi/extensions/fm-primary-pi-watch.ts`.
+The turn-end guard extension lives at `/home/seung/.no-mistakes/worktrees/471db19625ab/01M357NSVJFNKRKJP4VMYDQCTQ/.pi/extensions/fm-primary-turnend-guard.ts`.
+The watcher extension lives at `/home/seung/.no-mistakes/worktrees/471db19625ab/01M357NSVJFNKRKJP4VMYDQCTQ/.pi/extensions/fm-primary-pi-watch.ts`.
 Both are tracked, project-local `.pi/extensions/*.ts` files that Pi auto-discovers once the project is trusted; `bin/fm-session-start.sh` reports when the running Pi session has not loaded both required extensions.
 
+
+=== pi-signed ===
+================================================================================
+SUPERVISION OPERATING INSTRUCTIONS - primary harness: pi-signed
+================================================================================
+Current state:
+- Lock: held by this session; this session owns normal supervision unless away mode says otherwise.
+- Away/quiet mode: inactive.
+- X mode: inactive; use the default watcher cadence.
+- Ordinary wake: the Pi extension already owns watcher continuity; do not arm another cycle.
+
+Mode: Pi extension background wake.
+
+When this session owns supervision, in either posture:
+1. Drain first with `bin/fm-wake-drain.sh`.
+   After handling all emitted wakes and reconciling open decisions and unread status lines, run the exact `--ack-through` command printed as `WAKE_ACK_REQUIRED`; until then the work remains durable for idempotent re-handling after interruption.
+   After that acknowledgement, run AGENTS.md section 8's admission step and emit its one-line summary in the same turn.
+2. Confirm the Pi primary auto-loaded both project extensions (plain `pi` or `pi-signed`, after approving project trust once per clone); if not, restart the selected executable with `-e /home/seung/.no-mistakes/worktrees/471db19625ab/01M357NSVJFNKRKJP4VMYDQCTQ/.pi/extensions/fm-primary-turnend-guard.ts -e /home/seung/.no-mistakes/worktrees/471db19625ab/01M357NSVJFNKRKJP4VMYDQCTQ/.pi/extensions/fm-primary-pi-watch.ts` as a trust-free fallback.
+3. Initial process cycle only: make the one required `fm_watch_arm_pi` call; if startup already owned the fleet lock, this is an ownership-based no-op.
+   Use `/fm-watch-arm-pi` only as a human-entered fallback.
+   Never run `bin/fm-watch-arm.sh` through Pi's bash tool because that foreground arm can wedge the agent and bypasses extension-owned cleanup.
+4. If the extension says no live session holds the lock, run `bin/fm-session-start.sh` to reclaim the session lock, then call `fm_watch_arm_pi` again.
+5. The extension starts `bin/fm-watch-arm.sh --restart`, keeps the child attached to the live Pi process, and owns every later successor launch.
+6. Ordinary same-process session replacement (`/new`, `/resume`, `/fork`, reload) retires only the prior generation; when the replacement owns the fleet lock, its `session_start` arms the new generation without a model turn or another `fm_watch_arm_pi` call.
+   The generation-owner contract and in-flight actionable-close handoff live in `.pi/extensions/fm-primary-pi-watch.ts`.
+7. After an actionable child close, the extension rechecks session-lock ownership and verifies one successor before it delivers the follow-up wake; its bounded fallback is defined in `docs/watcher-continuity.md`.
+8. Ordinary work, turn completion, and ordinary signal, stale, check, heartbeat, or other wake handling: do not call `fm_watch_arm_pi` again because continuity is extension-owned rather than model-memory-owned.
+9. An unexpected child close enters bounded exponential retry, and an exhausted retry or lost session lock is surfaced as a watcher failure instead of disappearing.
+10. Missing, failed, or unhealthy cycle only: if a later notification explicitly reports one of those repair conditions, drain queued wakes, inspect the failure text, call `fm_watch_arm_pi`, and restart the selected Pi-family executable with both extensions loaded if needed.
+   A redundant call while the extension owns an arm child or scheduled retry is an ownership-based `watcher: unchanged` no-op, not an independent health claim.
+11. Never use shell `&` for watcher supervision.
+   The arm mechanism above is extension-owned, not a model tool call, but a manual recovery probe that backgrounds, pipes, or bundles the arm is denied automatically by the PreToolUse seatbelt (`bin/fm-arm-pretool-check.sh`, wired into the turn-end guard extension at `/home/seung/.no-mistakes/worktrees/471db19625ab/01M357NSVJFNKRKJP4VMYDQCTQ/.pi/extensions/fm-primary-turnend-guard.ts`).
+
+The supervision branch is default-on (docs/pi-supervision-branch.md): whenever this session owns the fleet lock, the watcher extension hands eligible task-local rows from ordinary actionable wakes, plus selected fleet-wide heartbeat reviews, to the in-process supervision branch while main-only rows remain queued for this conversation.
+While the away-posture record `state/.afk-contract` exists the branch takes every row instead, this conversation receives no processing request, and main's standing authority relocates to the branch through the guarded scripts; a wake the branch cannot take and every watcher-failure alarm still reach this conversation, and the first run boundary after the record is archived presents what accumulated (docs/pi-supervision-branch.md "Postures").
+Decision-owned signal and stale routing, including whole-batch precedence and the independent heartbeat exception, is owned by [docs/pi-supervision-branch.md](../pi-supervision-branch.md#components-and-their-owners).
+A no-change heartbeat outcome explicitly reported with `task=fleet` and `silent=true` is delivered silently with no rendered note, while every other routine outcome returns as an appended, rendered note that leads with ⛵ then the dim outcome text.
+A captain-facing outcome instead appears as one exact, sequence-keyed visible transcript entry, and while attended then arrives in this conversation as one hidden supervision processing request listing each `[seq N] task: summary` it covers; outcomes recorded while away wait for that request until the record is archived.
+That request is the one turn in which MAIN processes the outcome: give the captain a visible response where one is due, answer or escalate a decision, act on a blocker or failure, or record that no further action is needed, then call the `fm_branch_processed` tool with the highest sequence the request listed, exactly once.
+Only that call closes the outcome; an unrelated, empty, or paraphrased answer leaves it open, and the current unprocessed sequence set is presented again at the next run boundary and at session start until it is acknowledged.
+The persisted entry is already the captain-visible record, so MAIN must not re-emit it verbatim merely because it appeared; this prevents repetition but does not replace any captain-facing outcome response required by `AGENTS.md` section 9.
+Regression example - keep verbatim and never condense away: `[seq 41] claude-mod: implementation complete, ready for review` requires relaying a captain-facing outcome response, not just `Captain, shipshape.`.
+A merge ask with no URL that leans on the dim anchor violates `AGENTS.md` section 9.
+Before MAIN steers, controls lifecycle, or cleans up a task, claim its lease with `bin/fm-lease.sh claim <task>` and release it afterwards; a refused claim means the branch is acting on that task right now.
+This conversation still receives every other fleet-wide or unresolvable wake, the branch's wakes when it is unavailable, and every watcher-failure alarm regardless of posture, so the arm and repair contract above is unchanged.
+Treat the merged fleet event as already handled for fleet operations: MAIN must not re-drain, re-run, or acknowledge it.
+Separately, MAIN applies judgment about whether and how to surface, summarize, reference, or incorporate a merged sailboat outcome in the captain conversation; event ownership does not decide the conversational treatment.
+Read the durable outcome store with the fm_branch_outcomes tool when the captain asks what happened.
+
+The turn-end guard extension lives at `/home/seung/.no-mistakes/worktrees/471db19625ab/01M357NSVJFNKRKJP4VMYDQCTQ/.pi/extensions/fm-primary-turnend-guard.ts`.
+The watcher extension lives at `/home/seung/.no-mistakes/worktrees/471db19625ab/01M357NSVJFNKRKJP4VMYDQCTQ/.pi/extensions/fm-primary-pi-watch.ts`.
+Both are tracked, project-local `.pi/extensions/*.ts` files that Pi auto-discovers once the project is trusted; `bin/fm-session-start.sh` reports when the running Pi session has not loaded both required extensions.
+
+
+=== unknown ===
 ================================================================================
 SUPERVISION OPERATING INSTRUCTIONS - primary harness: unknown
 ================================================================================
