@@ -285,25 +285,34 @@ if printf '%s\n' "$out" | grep -Eq '^(skipped: cursor|park:)'; then
 fi
 ok "an unmeasurable provider row is disclosed, never called exhausted"
 
-# 7e. A bare-harness profile (crew-dispatch `use` with no model) is legitimate
-# input: it resolves to the harness default model, is measured on the
-# provider-wide scopes, and never aborts the selection.
+# 7e. A bare-harness profile (crew-dispatch `use` with no model) is accepted
+# input but never selected: its identity cannot be resolved against the
+# author, so it is skipped with that reason and selection continues.
 out=$(call_choose --author grok:grok-4 --snapshot "$FIXTURE" \
-  --candidate codex --candidate claude); rc=$?
+  --candidate claude --candidate pi:openai-codex/gpt-6-astra@pi); rc=$?
 [ "$rc" -eq 0 ] || fail "bare harness: expected exit 0, got $rc with '$out'"
-expected="skipped: codex quota-ineligible
-reviewer: claude default"
+expected="skipped: claude model-unresolvable
+reviewer: pi openai-codex/gpt-6-astra"
 [ "$out" = "$expected" ] || fail "bare harness: expected '$expected', got '$out'"
 out=$(call_choose --author claude:claude-opus-5 --snapshot "$FIXTURE" \
   --candidate claude --candidate pi:openai-codex/gpt-6-astra@pi)
-expected="skipped: claude author
-reviewer: pi openai-codex/gpt-6-astra"
-[ "$out" = "$expected" ] || fail "bare harness author: expected '$expected', got '$out'"
+[ "$out" = "$expected" ] || fail "bare harness same-harness author: expected '$expected', got '$out'"
+out=$(call_choose --author pi:anthropic/claude-sonnet-5 --snapshot "$FIXTURE" \
+  --candidate claude --candidate pi:openai-codex/gpt-6-astra@pi)
+[ "$out" = "$expected" ] || fail "bare harness cross-harness author: expected '$expected', got '$out'"
+if out=$(call_choose --author grok:grok-4 --snapshot "$FIXTURE" \
+  --candidate codex --candidate claude 2>/dev/null); then
+  fail "bare-only review rule unexpectedly selected '$out'"
+fi
+expected="skipped: codex model-unresolvable
+skipped: claude model-unresolvable
+park: no eligible reviewer (codex=model-unresolvable, claude=model-unresolvable)"
+[ "$out" = "$expected" ] || fail "bare-only park: expected '$expected', got '$out'"
 if out=$(call_choose --author grok:grok-4 --snapshot "$FIXTURE" \
   --candidate codex --candidate claude: 2>/dev/null); then
   fail "empty model after colon unexpectedly succeeded with '$out'"
 fi
-ok "a bare-harness profile resolves instead of aborting"
+ok "a bare-harness profile is skipped as unresolvable, never selected"
 
 # 8. The snapshot is read only from --snapshot; stdin is not a spelling.
 if out=$(call_choose --author grok:grok-4 --candidate claude:claude-opus-5 < "$FIXTURE" 2>/dev/null); then

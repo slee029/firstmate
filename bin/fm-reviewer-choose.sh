@@ -19,11 +19,11 @@
 # carrying the explicit quota-axi provider family the review configuration
 # established for that profile (the crew-dispatch `provider` field). Without
 # the suffix the candidate's quota is read from its harness's primary provider
-# family, exactly as bin/fm-quota-choose.sh does. A bare harness is a
-# legitimate crew-dispatch profile with no `model`: it resolves to that
-# harness's own default model exactly as bin/fm-quota-choose.sh resolves it,
-# is measured on the provider-wide scopes only, and is printed and recorded as
-# "<harness> default" so the caller pins the harness alone.
+# family, exactly as bin/fm-quota-choose.sh does. A bare harness (a
+# crew-dispatch profile with no `model`) is accepted as input but never
+# selected: without a model this helper cannot resolve the candidate's
+# identity against the author, so it is skipped as model-unresolvable, and a
+# review rule listing only bare-harness profiles parks with nothing selected.
 #
 # For each candidate in order, three gates apply. The non-author gate compares
 # underlying model identity rather than spelling: the model token with any
@@ -32,9 +32,9 @@
 # are the same author, as are codex:codex_bengalfox and
 # codex:model:codex_bengalfox. The rule fails closed: two spellings that may
 # denote the same underlying model are treated as the same identity and the
-# candidate is skipped as the author, and a bare-harness candidate whose
-# default model is unknown is the author whenever its harness is the author's
-# harness. The approval gate skips a candidate
+# candidate is skipped as the author; the gate never compares harness names,
+# so a candidate that names no model cannot pass it and is skipped as
+# model-unresolvable. The approval gate skips a candidate
 # listed in --needs-approval unless it is also listed in --approved, both
 # matched on the exact harness:model pin, so a reviewer that needs an explicit
 # captain decision is never selected silently. The quota gate probes
@@ -63,8 +63,8 @@
 # candidate.
 #
 # Output on stdout is the durable switch record. Each skipped candidate prints
-# "skipped: <candidate> <reason>" with reason author, needs-approval, or
-# quota-ineligible, in listed order. A selection then prints
+# "skipped: <candidate> <reason>" with reason model-unresolvable, author,
+# needs-approval, or quota-ineligible, in listed order. A selection then prints
 # "reviewer: <harness> <model>" and exits 0. When no candidate passes every
 # gate and no unmeasured candidate remains, the same skipped lines print
 # followed by one truthful "park: no eligible reviewer (...)" line naming
@@ -231,18 +231,9 @@ pin_key() {
 }
 
 AUTHOR_IDENTITY=$(model_identity "$AUTHOR")
-AUTHOR_HARNESS=${AUTHOR%%:*}
 
-# is_author <harness:model or harness> fails closed: a candidate with an
-# unknown default model is the author whenever it runs on the author's harness.
-is_author() {
-  local model
-  model=$(pin_model "$1")
-  if [ -z "$model" ]; then
-    [ "${1%%:*}" = "$AUTHOR_HARNESS" ]
-  else
-    [ "$(model_identity "$1")" = "$AUTHOR_IDENTITY" ]
-  fi
+is_author() {  # <harness:model>
+  [ "$(model_identity "$1")" = "$AUTHOR_IDENTITY" ]
 }
 
 in_list() {  # <pin key> <entries...>
@@ -336,7 +327,9 @@ for c in "${CANDIDATES[@]}"; do
   key=$(pin_key "$pin")
   reason=
   why=
-  if is_author "$pin"; then
+  if [ -z "$(pin_model "$pin")" ]; then
+    reason="model-unresolvable"
+  elif is_author "$pin"; then
     reason=author
   elif in_list "$key" "${NEEDS_APPROVAL[@]}" && ! in_list "$key" "${APPROVED[@]}"; then
     reason=needs-approval
@@ -344,8 +337,6 @@ for c in "${CANDIDATES[@]}"; do
     why=$target
   elif probe_out=$("$CHOOSE" --snapshot "$SNAPSHOT_SOURCE" --candidate "$target" 2>&1); then
     selected="${pin%%:*} $(pin_model "$pin")"
-    selected=${selected% }
-    [ -n "$(pin_model "$pin")" ] || selected="$selected default"
     break
   else
     rc=$?

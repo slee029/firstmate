@@ -189,10 +189,8 @@ fm_quota_snapshot_json() {
     schema=$(printf '%s\n' "$json" | jq -r '.schemaVersion // empty' 2>/dev/null) || schema=
     case "$schema" in
       5|6) ;;
-      '') { printf 'quota-axi json missing schemaVersion
-  '; return 1; } ;;
-      *) { printf 'unsupported quota-axi schema version: %s
-  ' "$schema"; return 1; } ;;
+      '') { printf 'quota-axi json missing schemaVersion\n'; return 1; } ;;
+      *) { printf 'unsupported quota-axi schema version: %s\n' "$schema"; return 1; } ;;
     esac
   else
     json=$(printf '%s\n' "$snapshot" | jq -Rse '
