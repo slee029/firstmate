@@ -25,28 +25,20 @@
 # reasoning-class or runway-feasibility gates; it only answers which ordered
 # candidate remains eligible under the captured quota evidence.
 #
-# Multi-provider limitation: this helper maps each harness to ONE primary
-# provider family (fm_quota_provider_for_harness in bin/fm-quota-axi-lib.sh)
-# and checks quota for that
-# family only. Some harnesses can run models from several providers - for
-# example, Pi and OpenCode may dispatch xAI, Anthropic, or other models - so a
-# candidate whose established provider differs from the harness's primary family
-# is checked against the wrong quota row. This is an accepted limitation of the
-# optional helper. Authoritative multi-provider routing - including provider
-# discovery from the harness catalog and quota matching by that explicit
-# provider - is owned by AGENTS.md section 4 and the quota-array-dispatch skill,
-# not by this helper. Use this helper only when the brief already fixed the
-# candidate order and every candidate's provider is the harness's primary family.
-#
-# omp (Oh My Pi) has no single primary family, so its candidate model prefix
-# selects the family: openai-codex/<id> checks the codex row and
-# claude-bridge/<id> checks the claude row, each against the bare <id> for
-# model: and product: scopes. Any other or absent prefix is refused up front,
-# the same shape as an unknown harness, because no quota-axi row measures it.
+# Quota mapping: each candidate is resolved through the shared availability
+# owner (fm_quota_effective_for_provider_model in bin/fm-quota-axi-lib.sh),
+# which returns a measured-or-unmeasured verdict with a rank. A supported
+# harness with no established quota binding - a multi-provider route without
+# a declared provider, or an omp model outside its mapped prefixes - is
+# unmeasured uncertainty that stays eligible behind every measured-eligible
+# candidate, never a rejection; only an unsupported harness fails argument
+# validation. omp keeps its established quota routes: an openai-codex/<id>
+# candidate checks the codex row and a claude-bridge/<id> candidate checks the
+# claude row, each against the bare <id> for model: and product: scopes.
 # quota-axi reports Codex quota unavailable on this host because omp carries
-# its own Codex login, so an openai-codex candidate reads as unknown quota here
-# and is never selected on this host; its runway is disclosed uncertainty for
-# the agent-side gates, not measured headroom.
+# its own Codex login, so an openai-codex candidate reads as unmeasured quota
+# here; its runway is disclosed uncertainty for the agent-side gates, not
+# measured headroom.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -115,57 +107,46 @@ fi
 
 QUOTA_JSON=$(printf '%s\n' "$QUOTA_SNAPSHOT" | fm_quota_snapshot_json) || die "$QUOTA_JSON"
 
-# provider_for_harness <harness> [<model>]
-# The harness -> primary provider family table is owned by
-# fm_quota_provider_for_harness in bin/fm-quota-axi-lib.sh; see the header
-# limitation note for why one family per harness is all this helper checks.
-provider_for_harness() {
-  fm_quota_provider_for_harness "$@"
-}
+# A malformed snapshot is an input error with the snapshot owner's own
+# diagnostic, before any candidate is examined.
+QUOTA_JSON=$(printf '%s\n' "$QUOTA_JSON" | fm_quota_snapshot_json) || die "$QUOTA_JSON"
 
-# effective_for_provider_model <provider> <model>
-# Owned by fm_quota_effective_for_provider_model in bin/fm-quota-axi-lib.sh.
-effective_for_provider_model() {
-  printf '%s\n' "$QUOTA_JSON" | fm_quota_effective_for_provider_model "$@"
-}
-
+# An unsupported harness fails here; a supported harness with unmeasured
+# quota stays eligible through the shared rank below.
 for c in "${CANDIDATES[@]}"; do
   harness=${c%%:*}
   model=${c#*:}
   [ "$model" = "$c" ] && model="default"
   [ -n "$model" ] || die "invalid candidate: $c"
   fm_control_harness_supported "$harness" || die "unknown harness: $harness"
-  provider_for_harness "$harness" "$model" >/dev/null || case "$harness" in
-    omp) die "omp quota mapping covers only the openai-codex and claude-bridge prefixes: $model" ;;
-    *) die "unknown harness: $harness" ;;
-  esac
 done
 
+# Each candidate is resolved once through the shared availability owner with
+# no declared provider; the exhausted verdict is skipped and the generic
+# minimum of returned ranks wins, preserving listed order within a rank, so
+# an earlier unmeasured candidate never outranks a measured-eligible one.
 chosen="none"
+best_rank=3
 for c in "${CANDIDATES[@]}"; do
   harness=${c%%:*}
   model=${c#*:}
   [ "$model" = "$c" ] && model="default"
-  provider=$(provider_for_harness "$harness" "$model")
-  scope_model=$model
-  [ "$harness" != omp ] || scope_model=${model#*/}
-  lane=$(jq -rn --arg h "$harness" --arg m "$model" "$FM_QUOTA_ROW_JQ"'quota_lane($h; $m)')
-  effective=$(effective_for_provider_model "$provider" "$scope_model" "$lane")
-  if [ -z "$effective" ] || [ "$effective" = "null" ]; then
-    continue
-  fi
-  if printf '%s\n' "$effective" | jq -e '
-    if (.runway.status // "") == "exhausted_now" then false
-    elif .status == "unknown" then false
-    else
-      .effectivePercentRemaining as $remaining |
-      (($remaining | type) == "number") and
-      ($remaining > 0) and
-      ((.runway.status // "") != "exhausted_now")
-    end
-  ' >/dev/null 2>&1; then
+  availability=$(printf '%s\n' "$QUOTA_JSON" |
+    fm_quota_effective_for_provider_model "$harness" "$model" "") || {
+    printf 'error: quota availability could not be resolved for %s\n' "$harness:$model" >&2
+    exit 2
+  }
+  verdict=${availability%%$'\t'*}
+  rest=${availability#*$'\t'}
+  rank=${rest%%$'\t'*}
+  case "$verdict:$rank" in
+    eligible:0|unmeasured:1) ;;
+    exhausted:2) continue ;;
+    *) die "quota availability could not be resolved for $harness:$model" ;;
+  esac
+  if [ "$rank" -lt "$best_rank" ]; then
+    best_rank=$rank
     chosen="$harness $model"
-    break
   fi
 done
 

@@ -4576,6 +4576,25 @@ if [ "$RELAUNCH" -eq 1 ]; then
   SPAWN_META_PUBLISH_STARTED=0
   SPAWN_META_TMP=
 fi
+# A mode=no-mistakes lane needs a review after this worker starts, so
+# refresh the global reviewer pin before delivering it: the refresh reads
+# the bound review rule, one quota snapshot, and the active no-mistakes
+# author union (including the record just published above), then rewrites
+# only the reviewer block when the current pin is ineligible. This single
+# seam serves fresh spawn and relaunch alike. A nonzero refresh ends the
+# spawn here with the refresh's own code, and the abort trap reports the
+# preserved work; a changed global pin is never rolled back for a later
+# unrelated delivery failure. The worker launch below inherits the same
+# canonical NM_HOME the refresh used, so refresh and run construction
+# cannot address different configs.
+if [ "$MODE" = no-mistakes ]; then
+  SPAWN_NM_HOME=${NM_HOME:-$HOME/.no-mistakes}
+  SPAWN_NM_HOME=$(cd "$SPAWN_NM_HOME" 2>/dev/null && pwd -P) || {
+    echo "error: no-mistakes home is not a directory: ${NM_HOME:-$HOME/.no-mistakes}" >&2
+    exit 1
+  }
+  NM_HOME=$SPAWN_NM_HOME "$SCRIPT_DIR/fm-reviewer-choose.sh" || exit $?
+fi
 # A dispatch or relaunch keeps the per-task meta lock through launch delivery.
 # The backlog mutation is deliberately the final fallible commit below, so
 # teardown cannot remove a relaunched record while its replacement worker is
@@ -4735,6 +4754,13 @@ fi
 # syntax of its own.
 if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
   spawn_send_text_line "$T" "export FM_TASK_ID=$ID"
+fi
+# A mode=no-mistakes lane's worker must address the same no-mistakes home
+# the reviewer refresh above just used, so export the canonical path
+# through the exact channel that already ships GOTMPDIR, before launch.
+# Other modes never consult the global reviewer pin and receive nothing.
+if [ "$MODE" = no-mistakes ]; then
+  spawn_send_text_line "$T" "export NM_HOME=$(shell_quote "$SPAWN_NM_HOME")"
 fi
 # Send through the exact channel that already ships GOTMPDIR, so every backend
 # and harness - ship, scout, and secondmate - gets it before launch. Skipped

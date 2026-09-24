@@ -156,25 +156,84 @@ fm_quota_single_provider_for_harness() {
   return 1
 }
 
-fm_quota_provider_for_harness() {
+# fm_quota_provider_for_harness <harness> [<model>] is the sole public
+# resolver for the author/identity family of a harness plus model spelling.
+# It prints one canonical family token and returns 0 when the spelling
+# resolves, and prints nothing and returns 1 when it does not. It never
+# substitutes the harness name on failure: an unresolved identity fails
+# closed in every consumer. A native single-family harness resolves its known
+# family for a bare or default model and for an explicit model that resolves
+# to the same family; a contradictory or unrecognized explicit model is
+# unresolved. The multi-provider harnesses (pi, pi-signed, omp, opencode)
+# and the runtime-named harnesses (cursor, agy, rovo) resolve only through an
+# explicit recognized provider/model spelling: a broker prefix (openrouter/,
+# cliproxyapi/, antigravity/) is skipped to the underlying segment, and an
+# opaque broker alias is unresolved. This is author-family identity, not
+# quota account routing: fm_quota_single_provider_for_harness stays the
+# quota provider default owner for typed dispatch.
+_fm_quota_family_segment() {
   case "$1" in
-    omp)
-      case "${2:-}" in
-        openai-codex/*)  printf 'codex\n' ;;
-        claude-bridge/*) printf 'claude\n' ;;
-        *)               return 1 ;;
-      esac
-      ;;
-    claude)       printf 'claude\n' ;;
-    codex)        printf 'codex\n' ;;
-    opencode)     printf 'codex\n' ;;
-    pi|pi-signed) printf 'pi\n' ;;
-    grok)         printf 'grok\n' ;;
-    kimi)         printf 'kimi\n' ;;
-    cursor)       printf 'cursor\n' ;;
-    muse)         printf 'meta\n' ;;
-    *)            return 1 ;;
+    anthropic|claude|claude-*) printf 'claude\n' ;;
+    openai-codex|codex-native|openai*|codex*|gpt*|astra*) printf 'codex\n' ;;
+    gemini*|google*|vertex*) printf 'gemini\n' ;;
+    xai*|grok*) printf 'grok\n' ;;
+    kimi*|moonshot*) printf 'kimi\n' ;;
+    meta*|muse*|llama*) printf 'meta\n' ;;
+    z-ai|zai) printf 'zai\n' ;;
+    *) return 1 ;;
   esac
+}
+_fm_quota_family_broker() {
+  case "$1" in
+    openrouter|cliproxyapi|antigravity) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+_fm_quota_family_model() {
+  local rest first
+  rest=${1#model:}
+  [ -n "$rest" ] || return 1
+  rest=$(printf '%s\n' "$rest" | tr '[:upper:]' '[:lower:]')
+  case "$rest" in
+    ''|default) return 1 ;;
+  esac
+  first=${rest%%/*}
+  while _fm_quota_family_broker "$first"; do
+    case "$rest" in
+      */*) rest=${rest#*/} ;;
+      *) return 1 ;;
+    esac
+    first=${rest%%/*}
+  done
+  _fm_quota_family_segment "$first"
+}
+fm_quota_provider_for_harness() {
+  local harness=${1:-} model=${2:-} native resolved
+  [ -n "$harness" ] || return 1
+  case "$harness" in
+    claude) native=claude ;;
+    codex) native=codex ;;
+    gemini) native=gemini ;;
+    grok) native=grok ;;
+    kimi) native=kimi ;;
+    muse) native=meta ;;
+    pi|pi-signed|omp|opencode|cursor|agy|rovo) native= ;;
+    *) return 1 ;;
+  esac
+  case "$model" in
+    ''|default)
+      [ -n "$native" ] || return 1
+      printf '%s\n' "$native"
+      return 0
+      ;;
+  esac
+  resolved=$(_fm_quota_family_model "$model") || return 1
+  if [ -n "$native" ]; then
+    [ "$resolved" = "$native" ] || return 1
+    printf '%s\n' "$native"
+    return 0
+  fi
+  printf '%s\n' "$resolved"
 }
 
 # fm_quota_snapshot_json reads one quota-axi default TOON or schema-5/6 JSON
@@ -392,19 +451,62 @@ fm_quota_snapshot_json() {
     printf '%s\n' "$json"
 }
 
-# fm_quota_effective_for_provider_model <provider> <model> [<lane>] reads
-# validated schema-5 or schema-6 JSON on stdin and prints the most
-# constraining applicable quota evidence for the provider/model tuple,
-# including provider-wide and exact model or product scopes; {status:
-# "unknown"} means nothing measurable applies. The row is bound through
-# quota_row from FM_QUOTA_ROW_JQ, so <lane> matters only on a schema 6
-# snapshot.
+# fm_quota_effective_for_provider_model <harness> <model-or-default>
+# <declared-provider-or-empty> is the single availability owner for one
+# candidate. It reads one quota-axi snapshot on stdin, revalidates it through
+# fm_quota_snapshot_json (a rejected snapshot is an input error, never
+# unmeasured), and prints one tab-separated record
+# "<verdict>\t<rank>\t<reason>" with no tabs or newlines inside the reason:
+# eligible (rank 0) for applicable known remaining above zero with no
+# applicable exhausted-now runway; unmeasured (rank 1) when no measured
+# applicable evidence or no justified quota mapping applies; exhausted
+# (rank 2) for applicable measured zero or any applicable exhausted-now
+# runway, including unknown headroom beside known exhaustion. Consumers
+# exclude the exhausted verdict and take the generic minimum of returned
+# ranks; the measured-before-unmeasured preference lives only here. A
+# declared provider is used directly after identifier validation, keeping
+# the original candidate lane from quota_lane. Without one, the established
+# native single-provider mapping applies (keeping the omp openai-codex and
+# claude-bridge quota routes); a multi-provider route without an established
+# binding is unmeasured, never bound to an arbitrary primary. Model and
+# product scope matching uses the normalized spelling inside this function.
 fm_quota_effective_for_provider_model() {
-  local provider=$1 model=${2:-default} lane=${3:-}
-  jq -c --arg provider "$provider" --arg model "$model" --arg lane "$lane" "$FM_QUOTA_ROW_JQ"'
+  local harness=${1:-} model=${2:-default} declared=${3:-}
+  local snapshot validated provider scope_model lane
+  [ -n "$harness" ] || return 1
+  snapshot=$(cat) || return 1
+  validated=$(printf '%s\n' "$snapshot" | fm_quota_snapshot_json) || return 1
+  case "$declared" in
+    '') ;;
+    -*|*-|*--*|*[!a-z0-9-]*) return 1 ;;
+  esac
+  if [ -n "$declared" ]; then
+    provider=$declared
+  else
+    case "$harness" in
+      omp)
+        case "${model#model:}" in
+          openai-codex/*) provider=codex ;;
+          claude-bridge/*) provider=claude ;;
+          *)
+            printf 'unmeasured\t1\tunmeasured\n'
+            return 0 ;;
+        esac ;;
+      *)
+        provider=$(fm_quota_single_provider_for_harness "$harness") || {
+          printf 'unmeasured\t1\tunmeasured\n'
+          return 0
+        } ;;
+    esac
+  fi
+  scope_model=${model#model:}
+  [ "$harness" != omp ] || scope_model=${scope_model#*/}
+  lane=$(jq -rn --arg h "$harness" --arg m "$model" "$FM_QUOTA_ROW_JQ"'quota_lane($h; $m)') || return 1
+  printf '%s\n' "$validated" |
+  jq -r --arg provider "$provider" --arg model "$scope_model" --arg lane "$lane" "$FM_QUOTA_ROW_JQ"'
     ($model | sub("^model:"; "")) as $model_token |
     quota_row(.; $provider; $lane) as $p |
-    if ($p // null) == null then {status: "unknown"}
+    if ($p // null) == null then "unmeasured\t1\tunmeasured"
     else ($p.quotaSemantics.effectiveAvailability // []) |
     map(select(.scope as $scope |
       $scope == "all_models" or $scope == "all_products" or
@@ -413,13 +515,11 @@ fm_quota_effective_for_provider_model() {
        ($model_token == ($scope | sub("^(model|product):"; ""))))
     )) as $applicable |
     ($applicable | map(select(.status == "known"))) as $known |
-    if ($applicable | length) == 0 then {status: "unknown"}
-    elif any($applicable[]; (.runway.status // "") == "exhausted_now") then
-      ($applicable | map(select((.runway.status // "") == "exhausted_now")) | first)
-    elif ($known | length) == 0 then {status: "unknown"}
-    elif any($known[]; .effectivePercentRemaining == 0) then
-      ($known | map(select(.effectivePercentRemaining == 0)) | first)
-    else ($known | min_by(.effectivePercentRemaining))
+    if ($applicable | length) == 0 then "unmeasured\t1\tunmeasured"
+    elif any($applicable[]; (.runway.status // "") == "exhausted_now") then "exhausted\t2\texhausted-runway"
+    elif ($known | length) == 0 then "unmeasured\t1\tunmeasured"
+    elif any($known[]; .effectivePercentRemaining == 0) then "exhausted\t2\tzero-remaining"
+    else "eligible\t0\tremaining=\(($known | map(.effectivePercentRemaining) | min | tostring))"
     end
     end
   ' 2>/dev/null

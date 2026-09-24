@@ -1,112 +1,25 @@
 #!/usr/bin/env bash
-# Regression tests for bin/fm-reviewer-choose.sh.
-# Drives the public argv interface with fixture quota-axi JSON snapshots and a
-# fake quota-axi that must never be called: selection reads one captured
-# snapshot, so any live quota call is a failure.
+# Regression tests for bin/fm-reviewer-choose.sh, the serialized global
+# reviewer-pin refresh. Every case runs against isolated fixture homes: its
+# own FM_HOME (routing rule plus lane records), its own NM_HOME (global
+# config plus lock plus switch record), and fixture quota snapshots. No
+# case touches the real global config, daemon, account, or lane, and the
+# fake quota-axi fails when the file-input seam should have been used.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 BIN="$FM_ROOT/bin"
+REFRESH="$BIN/fm-reviewer-choose.sh"
 
 LAB=$(mktemp -d "${TMPDIR:-/tmp}/fm-reviewer-choose.XXXXXX")
-FIXTURE="$LAB/quota.json"
-BAD_SCHEMA="$LAB/bad-schema.json"
-MALFORMED="$LAB/malformed.json"
 FAKEBIN="$LAB/fakebin"
+mkdir -p "$FAKEBIN"
 
 cleanup() {
   rm -rf "$LAB"
 }
 trap cleanup EXIT
-
-mkdir -p "$FAKEBIN"
-
-# Codex exhausted (the ticket's usage-limits case), Claude healthy after reset,
-# Pi healthy, Cursor present but unmeasurable (its vendor exposes no window).
-# Grok is absent: unmodeled quota.
-cat > "$FIXTURE" <<'JSON'
-{
-  "generatedAt": "2030-01-01T00:00:00Z",
-  "schemaVersion": 5,
-  "providers": [
-    {
-      "provider": "codex",
-      "windows": [],
-      "quotaSemantics": {
-        "status": "known",
-        "effectiveAvailability": [
-          {
-            "scope": "all_models",
-            "status": "known",
-            "effectivePercentRemaining": 0,
-            "runway": { "status": "exhausted_now" }
-          }
-        ]
-      }
-    },
-    {
-      "provider": "claude",
-      "windows": [],
-      "quotaSemantics": {
-        "status": "known",
-        "effectiveAvailability": [
-          {
-            "scope": "all_models",
-            "status": "known",
-            "effectivePercentRemaining": 62,
-            "runway": { "status": "through_reset" }
-          }
-        ]
-      }
-    },
-    {
-      "provider": "pi",
-      "windows": [],
-      "quotaSemantics": {
-        "status": "known",
-        "effectiveAvailability": [
-          {
-            "scope": "all_models",
-            "status": "known",
-            "effectivePercentRemaining": 40,
-            "runway": { "status": "through_reset" }
-          }
-        ]
-      }
-    },
-    {
-      "provider": "cursor",
-      "windows": [],
-      "quotaSemantics": {
-        "status": "unknown",
-        "effectiveAvailability": []
-      }
-    }
-  ]
-}
-JSON
-
-cat > "$BAD_SCHEMA" <<'JSON'
-{
-  "generatedAt": "2030-01-01T00:00:00Z",
-  "schemaVersion": 4,
-  "providers": []
-}
-JSON
-
-printf 'not json\n' > "$MALFORMED"
-
-cat > "$FAKEBIN/quota-axi" <<'SH'
-#!/usr/bin/env bash
-printf 'quota-axi must not be called by reviewer selection\n' >&2
-exit 99
-SH
-chmod +x "$FAKEBIN/quota-axi"
-
-call_choose() {
-  PATH="$FAKEBIN:$PATH" "$BIN/fm-reviewer-choose.sh" "$@"
-}
 
 fail() {
   printf 'not ok - %s\n' "$1" >&2
@@ -117,269 +30,630 @@ ok() {
   printf 'ok - %s\n' "$1"
 }
 
-if help=$("$BIN/fm-reviewer-choose.sh" --help 2>&1); then
+# fx_world <name> builds one isolated world: $W/fm is FM_HOME with a
+# two-candidate review rule (Pi/Astra low provider codex, then
+# Claude/Opus medium) and no lane records; $W/nm is NM_HOME with a global
+# config pinning Pi/Astra low plus comments, a commented alternate, fixer
+# settings, and unrelated agent configuration. Prints the world path.
+fx_world() {
+  local w=$LAB/$1
+  mkdir -p "$w/fm/config" "$w/fm/state" "$w/fm/data" "$w/nm"
+  cat > "$w/fm/config/crew-dispatch.json" <<'JSON'
+{"rules": [{"when": "validation review", "reviewer": true, "why": "the author's family is excluded", "use": [{"harness": "pi", "model": "openai-codex/gpt-6-astra", "effort": "low", "provider": "codex"}, {"harness": "claude", "model": "claude-opus-5", "effort": "medium"}]}], "default": [{"harness": "pi", "model": "openai-codex/gpt-6-astra", "effort": "low"}]}
+JSON
+  cat > "$w/nm/config.yaml" <<'YAML'
+# Fixture global config: comments and unrelated settings must survive.
+# A commented alternative reviewer block:
+# reviewer:
+#   agent: claude
+#   model: claude-opus-5
+#   effort: medium
+review_agents:
+  reviewer:
+    agent: pi
+    model: openai-codex/gpt-6-astra
+    effort: low
+  fixer:
+    agent: pi
+    model: openai-codex/gpt-6-astra
+agent_config:
+  pi:
+    setting: keepme
+YAML
+  printf '%s\n' "$w"
+}
+
+# fx_meta <world> <task> <harness> <model> [mode] records one lane.
+fx_meta() {
+  local w=$1 task=$2 harness=$3 model=$4 mode=${5:-no-mistakes}
+  printf 'harness=%s\nkind=ship\nmode=%s\nmodel=%s\n' "$harness" "$mode" "$model" > "$w/fm/state/$task.meta"
+}
+
+# fx_quota5 <path> <codex-pct> <codex-runway> <claude-pct> <claude-runway>
+# writes a schema-5 snapshot with codex and claude provider-wide rows.
+fx_quota5() {
+  local path=$1 codex_pct=$2 codex_runway=$3 claude_pct=$4 claude_runway=$5
+  cat > "$path" <<JSON
+{"generatedAt": "2030-01-01T00:00:00Z", "schemaVersion": 5, "providers": [
+{"provider": "codex", "quotaSemantics": {"status": "known", "effectiveAvailability": [{"scope": "all_models", "status": "known", "effectivePercentRemaining": $codex_pct, "runway": {"status": "$codex_runway"}}]}},
+{"provider": "claude", "quotaSemantics": {"status": "known", "effectiveAvailability": [{"scope": "all_models", "status": "known", "effectivePercentRemaining": $claude_pct, "runway": {"status": "$claude_runway"}}]}}
+]}
+JSON
+}
+
+# run_refresh <world> [args...] runs the refresh with the world pinned and
+# the quota-axi that must never fire first on PATH. Stdout goes to
+# $LAB/out, stderr to $LAB/err; prints the exit status.
+run_refresh() {
+  local w=$1
+  shift
+  PATH="$FAKEBIN:$PATH" FM_HOME="$w/fm" NM_HOME="$w/nm" \
+    bash "$REFRESH" "$@" >"$LAB/out" 2>"$LAB/err"
+  printf '%s' "$?"
+}
+
+cat > "$FAKEBIN/quota-axi" <<'SH'
+#!/usr/bin/env bash
+printf 'quota-axi must not be called on the file-input seam\n' >&2
+exit 99
+SH
+chmod +x "$FAKEBIN/quota-axi"
+
+Q_EXH="$LAB/quota-exhausted.json"
+Q_OK="$LAB/quota-healthy.json"
+Q_ALLEXH="$LAB/quota-all-exhausted.json"
+fx_quota5 "$Q_EXH" 0 exhausted_now 60 through_reset
+fx_quota5 "$Q_OK" 90 through_reset 60 through_reset
+fx_quota5 "$Q_ALLEXH" 0 exhausted_now 0 through_reset
+printf '{"generatedAt": "2030-01-01T00:00:00Z", "schemaVersion": 4, "providers": []}' > "$LAB/bad-schema.json"
+printf 'not json\n' > "$LAB/malformed.json"
+
+if help=$(bash "$REFRESH" --help 2>&1); then
   fail "help unexpectedly exited zero"
 fi
-printf '%s\n' "$help" | grep -Fq 'reviewer: <harness> <model>' \
-  || fail "help omitted the selection output contract"
+printf '%s\n' "$help" | grep -Fq 'FM_HOME=<owning-home>' ||
+  fail "help omitted the invocation contract"
+printf '%s\n' "$help" | grep -Fq 'reviewer-refresh' ||
+  fail "help omitted the switch record contract"
 if printf '%s\n' "$help" | grep -Fq 'set -u'; then
   fail "help leaked executable source"
 fi
-ok "help renders the complete header only"
+ok "help renders the header contract only"
 
-# 1. First healthy candidate is selected with no skipped lines.
-out=$(call_choose --author grok:grok-4 --snapshot "$FIXTURE" \
-  --candidate claude:claude-opus-5 --candidate pi:openai-codex/gpt-6-astra)
-[ "$out" = "reviewer: claude claude-opus-5" ] \
-  || fail "healthy first: expected only the reviewer line, got '$out'"
-ok "first healthy candidate is selected directly"
-
-# 2. Quota-exhausted reviewer fails over to the next eligible candidate and
-# the switch is recorded with its reason.
-out=$(call_choose --author pi:openai-codex/gpt-6-astra --snapshot "$FIXTURE" \
-  --candidate codex:gpt-6 --candidate claude:claude-opus-5)
-expected="skipped: codex:gpt-6 quota-ineligible
-reviewer: claude claude-opus-5"
-[ "$out" = "$expected" ] || fail "failover: expected '$expected', got '$out'"
-ok "exhausted reviewer fails over with a recorded switch"
-
-# 3. The author is skipped even when quota-healthy; selection continues.
-out=$(call_choose --author claude:claude-opus-5 --snapshot "$FIXTURE" \
-  --candidate claude:claude-opus-5 --candidate pi:anthropic/claude-sonnet-5@claude)
-expected="skipped: claude:claude-opus-5 author
-reviewer: pi anthropic/claude-sonnet-5"
-[ "$out" = "$expected" ] || fail "author skip: expected '$expected', got '$out'"
-ok "author candidate is skipped for a non-author reviewer"
-
-# 3b. The same underlying model reached through another harness is still the
-# author: the docs/examples/crew-dispatch.json pair claude/claude-sonnet-5 and
-# pi/anthropic/claude-sonnet-5 compares equal in both directions.
-out=$(call_choose --author claude:claude-sonnet-5 --snapshot "$FIXTURE" \
-  --candidate pi:anthropic/claude-sonnet-5 --candidate claude:claude-opus-5)
-expected="skipped: pi:anthropic/claude-sonnet-5 author
-reviewer: claude claude-opus-5"
-[ "$out" = "$expected" ] || fail "cross-harness author: expected '$expected', got '$out'"
-out=$(call_choose --author pi:anthropic/claude-sonnet-5 --snapshot "$FIXTURE" \
-  --candidate claude:Claude-Sonnet-5@claude --candidate claude:claude-opus-5)
-expected="skipped: claude:Claude-Sonnet-5@claude author
-reviewer: claude claude-opus-5"
-[ "$out" = "$expected" ] || fail "cross-harness author reverse: expected '$expected', got '$out'"
-if out=$(call_choose --author claude:claude-sonnet-5 --snapshot "$FIXTURE" \
-  --candidate pi:anthropic/claude-sonnet-5 2>/dev/null); then
-  fail "cross-harness author: expected a park, got exit 0 with '$out'"
-fi
-ok "the non-author gate holds across harness spellings"
-
-# 4. A leading model: scope prefix still counts as the same author.
-out=$(call_choose --author codex:codex_bengalfox --snapshot "$FIXTURE" \
-  --candidate codex:model:codex_bengalfox --candidate claude:claude-opus-5)
-expected="skipped: codex:model:codex_bengalfox author
-reviewer: claude claude-opus-5"
-[ "$out" = "$expected" ] || fail "author normalization: expected '$expected', got '$out'"
-ok "model scope prefix does not evade the non-author gate"
-
-# 5. No eligible candidate parks with a truthful per-candidate diagnostic.
-if out=$(call_choose --author claude:claude-opus-5 --snapshot "$FIXTURE" \
-  --candidate codex:gpt-6 --candidate claude:claude-opus-5 2>/dev/null); then
-  fail "park: expected exit 1, got exit 0 with '$out'"
-fi
-expected="skipped: codex:gpt-6 quota-ineligible
-skipped: claude:claude-opus-5 author
-park: no eligible reviewer (codex:gpt-6=quota-ineligible, claude:claude-opus-5=author)"
-[ "$out" = "$expected" ] || fail "park: expected '$expected', got '$out'"
-ok "exhausted field parks with a truthful diagnostic"
-
-# 6. A reviewer that needs approval is skipped until approval is granted.
-if out=$(call_choose --author grok:grok-4 --snapshot "$FIXTURE" \
-  --candidate claude:claude-opus-5 --needs-approval claude:claude-opus-5 2>/dev/null); then
-  fail "approval: expected exit 1, got exit 0 with '$out'"
-fi
-case "$out" in
-  *"skipped: claude:claude-opus-5 needs-approval"*"park: no eligible reviewer"*) ;;
-  *) fail "approval: expected a needs-approval park, got '$out'" ;;
+# An exhausted pin advances to the next eligible candidate, the switch is
+# recorded with its reason, and every byte outside the three value spans
+# survives, including comments and unrelated agent configuration.
+W=$(fx_world w-switch)
+fx_meta "$W" lane1 muse muse-spark
+cp "$W/nm/config.yaml" "$W/nm/config.yaml.orig"
+rc=$(run_refresh "$W" --snapshot "$Q_EXH")
+[ "$rc" = 0 ] || fail "exhausted pin: expected exit 0, got $rc with '$(cat "$LAB/err")'"
+[ "$(cat "$LAB/out")" = "reviewer-refresh: switched to=claude:claude-opus-5:medium" ] ||
+  fail "exhausted pin: wrong success line '$(cat "$LAB/out")'"
+[ "$(cat "$LAB/err")" = "" ] || fail "exhausted pin: success leaked to stderr"
+diff "$W/nm/config.yaml.orig" "$W/nm/config.yaml" > "$LAB/cfg.diff" || true
+[ "$(grep -c '^[<>]' "$LAB/cfg.diff")" = 6 ] ||
+  fail "exhausted pin: more than the three value spans changed"
+grep -Fq '<     agent: pi' "$LAB/cfg.diff" || fail "exhausted pin: agent span not replaced"
+grep -Fq '>     agent: claude' "$LAB/cfg.diff" || fail "exhausted pin: agent span wrong"
+grep -Fq '#   agent: claude' "$W/nm/config.yaml" || fail "exhausted pin: commented alternate lost"
+grep -Fq 'setting: keepme' "$W/nm/config.yaml" || fail "exhausted pin: agent config lost"
+grep -Fq 'fixer:' "$W/nm/config.yaml" || fail "exhausted pin: fixer block lost"
+record=$(cat "$W/nm/firstmate-reviewer-switches.log")
+case "$record" in
+  reviewer-refresh*' switched from=pi:openai-codex/gpt-6-astra:low to=claude:claude-opus-5:medium reason=quota-exhausted quota=eligible')
+    ;;
+  *) fail "exhausted pin: wrong switch record '$record'" ;;
 esac
-out=$(call_choose --author grok:grok-4 --snapshot "$FIXTURE" \
-  --candidate codex:gpt-6 --candidate claude:claude-opus-5 \
-  --needs-approval claude:claude-opus-5 --approved claude:claude-opus-5)
-expected="skipped: codex:gpt-6 quota-ineligible
-reviewer: claude claude-opus-5"
-[ "$out" = "$expected" ] || fail "approval grant: expected '$expected', got '$out'"
-ok "approval gate holds without approval and releases with it"
+ok "exhausted pin advances with a recorded switch and preserved bytes"
 
-# 7. The record file captures selections and parks.
-RECORD="$LAB/switches.log"
-: > "$RECORD"
-call_choose --author grok:grok-4 --snapshot "$FIXTURE" \
-  --candidate codex:gpt-6 --candidate claude:claude-opus-5 \
-  --record "$RECORD" >/dev/null
-call_choose --author claude:claude-opus-5 --snapshot "$FIXTURE" \
-  --candidate codex:gpt-6 --candidate claude:claude-opus-5 \
-  --record "$RECORD" >/dev/null 2>&1 || true
-[ "$(wc -l < "$RECORD" | tr -d '[:space:]')" = 2 ] || fail "record: expected two lines, got '$(cat "$RECORD")'"
-grep -Eq '^reviewer-choose [0-9]+ selected claude claude-opus-5 skipped codex:gpt-6=quota-ineligible$' "$RECORD" \
-  || fail "record: missing selection line in '$(cat "$RECORD")'"
-grep -Eq '^reviewer-choose [0-9]+ parked skipped codex:gpt-6=quota-ineligible, claude:claude-opus-5=author$' "$RECORD" \
-  || fail "record: missing park line in '$(cat "$RECORD")'"
-ok "switch record captures selections and parks"
+# A repeated identical refresh changes nothing: silent exit, same mtime,
+# and no extra switch line.
+BEFORE_MTIME=$(stat -c %Y "$W/nm/config.yaml")
+BEFORE_DIGEST=$(sha256sum "$W/nm/config.yaml" | awk '{print $1}')
+BEFORE_LINES=$(wc -l < "$W/nm/firstmate-reviewer-switches.log")
+rc=$(run_refresh "$W" --snapshot "$Q_EXH")
+[ "$rc" = 0 ] || fail "idempotent repeat: expected exit 0, got $rc"
+[ "$(cat "$LAB/out")" = "" ] || fail "idempotent repeat: unchanged pin printed '$(cat "$LAB/out")'"
+[ "$(stat -c %Y "$W/nm/config.yaml")" = "$BEFORE_MTIME" ] || fail "idempotent repeat: config rewritten"
+[ "$(sha256sum "$W/nm/config.yaml" | awk '{print $1}')" = "$BEFORE_DIGEST" ] || fail "idempotent repeat: config bytes moved"
+[ "$(wc -l < "$W/nm/firstmate-reviewer-switches.log")" = "$BEFORE_LINES" ] || fail "idempotent repeat: extra switch line"
+ok "repeated refresh is silent and byte-identical"
 
-# 7b. A declared provider is measured against that provider's row, not the
-# harness's primary family: with the pi row healthy and the codex row
-# exhausted, pi:openai-codex/gpt-6-astra@codex is quota-ineligible.
-out=$(call_choose --author grok:grok-4 --snapshot "$FIXTURE" \
-  --candidate pi:openai-codex/gpt-6-astra@codex --candidate claude:claude-opus-5)
-expected="skipped: pi:openai-codex/gpt-6-astra@codex quota-ineligible
-reviewer: claude claude-opus-5"
-[ "$out" = "$expected" ] || fail "declared provider: expected '$expected', got '$out'"
-out=$(call_choose --author grok:grok-4 --snapshot "$FIXTURE" \
-  --candidate pi:openai-codex/gpt-6-astra@pi)
-[ "$out" = "reviewer: pi openai-codex/gpt-6-astra" ] \
-  || fail "declared primary provider: expected selection, got '$out'"
-if call_choose --author grok:grok-4 --snapshot "$FIXTURE" \
-  --candidate pi:anthropic/claude-sonnet-5@Claude >/dev/null 2>&1; then
-  fail "malformed provider unexpectedly succeeded"
-fi
-ok "a declared provider selects the quota row that is probed"
+# A healthy current pin with no authors stays untouched.
+W=$(fx_world w-healthy)
+rc=$(run_refresh "$W" --snapshot "$Q_OK")
+[ "$rc" = 0 ] || fail "healthy pin: expected exit 0, got $rc"
+[ "$(cat "$LAB/out")" = "" ] || fail "healthy pin: printed '$(cat "$LAB/out")'"
+[ ! -e "$W/nm/firstmate-reviewer-switches.log" ] || fail "healthy pin: switch record created"
+ok "healthy pin stays untouched"
 
-# 7c. Unmeasurable quota is disclosed uncertainty, never an abort: a supported
-# harness with no quota-axi mapping stays eligible behind measured candidates.
-out=$(call_choose --author grok:grok-4 --snapshot "$FIXTURE" \
-  --candidate codex:gpt-6 --candidate gemini:gemini-3-pro --candidate claude:claude-opus-5)
-expected="skipped: codex:gpt-6 quota-ineligible
-deferred: gemini:gemini-3-pro quota-unmeasured (harness gemini has no quota-axi provider mapping)
-reviewer: claude claude-opus-5"
-[ "$out" = "$expected" ] || fail "unmodeled harness: expected '$expected', got '$out'"
-UNMEASURED_RECORD="$LAB/unmeasured.log"
-: > "$UNMEASURED_RECORD"
-out=$(call_choose --author grok:grok-4 --snapshot "$FIXTURE" \
-  --candidate codex:gpt-6 --candidate pi:xai/grok-4-fast@xai --candidate gemini:gemini-3-pro \
-  --record "$UNMEASURED_RECORD")
-expected="skipped: codex:gpt-6 quota-ineligible
-deferred: pi:xai/grok-4-fast@xai quota-unmeasured (provider xai has no quota-axi provider mapping)
-deferred: gemini:gemini-3-pro quota-unmeasured (harness gemini has no quota-axi provider mapping)
-unmeasured: pi:xai/grok-4-fast@xai provider xai has no quota-axi provider mapping
-reviewer: pi xai/grok-4-fast"
-[ "$out" = "$expected" ] || fail "unmeasured fallback: expected '$expected', got '$out'"
-grep -Eq '^reviewer-choose [0-9]+ selected pi xai/grok-4-fast unmeasured pi:xai/grok-4-fast@xai skipped codex:gpt-6=quota-ineligible$' "$UNMEASURED_RECORD" \
-  || fail "unmeasured record: got '$(cat "$UNMEASURED_RECORD")'"
-ok "unmeasured quota defers a candidate without aborting selection"
-
-# 7d. A mapped provider whose row exposes no measurable scope is unmeasured,
-# never reported as exhausted: it defers, stays eligible, and its park-free
-# selection says truthfully that the provider could not be measured.
-out=$(call_choose --author grok:grok-4 --snapshot "$FIXTURE" \
-  --candidate codex:gpt-6 --candidate cursor:cursor-grok-4.5-high --candidate claude:claude-opus-5)
-expected="skipped: codex:gpt-6 quota-ineligible
-deferred: cursor:cursor-grok-4.5-high quota-unmeasured (provider cursor exposes no measured quota for cursor-grok-4.5-high)
-reviewer: claude claude-opus-5"
-[ "$out" = "$expected" ] || fail "unmeasurable provider: expected '$expected', got '$out'"
-out=$(call_choose --author grok:grok-4 --snapshot "$FIXTURE" \
-  --candidate codex:gpt-6 --candidate cursor:cursor-grok-4.5-high); rc=$?
-[ "$rc" -eq 0 ] || fail "unmeasurable provider: expected exit 0, got $rc with '$out'"
-expected="skipped: codex:gpt-6 quota-ineligible
-deferred: cursor:cursor-grok-4.5-high quota-unmeasured (provider cursor exposes no measured quota for cursor-grok-4.5-high)
-unmeasured: cursor:cursor-grok-4.5-high provider cursor exposes no measured quota for cursor-grok-4.5-high
-reviewer: cursor cursor-grok-4.5-high"
-[ "$out" = "$expected" ] || fail "unmeasurable provider fallback: expected '$expected', got '$out'"
-if printf '%s\n' "$out" | grep -Eq '^(skipped: cursor|park:)'; then
-  fail "unmeasurable provider was reported as exhausted or parked: '$out'"
-fi
-ok "an unmeasurable provider row is disclosed, never called exhausted"
-
-# 7e. A bare-harness profile (crew-dispatch `use` with no model) is accepted
-# input but never selected: its identity cannot be resolved against the
-# author, so it is skipped with that reason and selection continues.
-out=$(call_choose --author grok:grok-4 --snapshot "$FIXTURE" \
-  --candidate claude --candidate pi:openai-codex/gpt-6-astra@pi); rc=$?
-[ "$rc" -eq 0 ] || fail "bare harness: expected exit 0, got $rc with '$out'"
-expected="skipped: claude model-unresolvable
-reviewer: pi openai-codex/gpt-6-astra"
-[ "$out" = "$expected" ] || fail "bare harness: expected '$expected', got '$out'"
-out=$(call_choose --author claude:claude-opus-5 --snapshot "$FIXTURE" \
-  --candidate claude --candidate pi:openai-codex/gpt-6-astra@pi)
-[ "$out" = "$expected" ] || fail "bare harness same-harness author: expected '$expected', got '$out'"
-out=$(call_choose --author pi:anthropic/claude-sonnet-5 --snapshot "$FIXTURE" \
-  --candidate claude --candidate pi:openai-codex/gpt-6-astra@pi)
-[ "$out" = "$expected" ] || fail "bare harness cross-harness author: expected '$expected', got '$out'"
-if out=$(call_choose --author grok:grok-4 --snapshot "$FIXTURE" \
-  --candidate codex --candidate claude 2>/dev/null); then
-  fail "bare-only review rule unexpectedly selected '$out'"
-fi
-expected="skipped: codex model-unresolvable
-skipped: claude model-unresolvable
-park: no eligible reviewer (codex=model-unresolvable, claude=model-unresolvable)"
-[ "$out" = "$expected" ] || fail "bare-only park: expected '$expected', got '$out'"
-if out=$(call_choose --author grok:grok-4 --snapshot "$FIXTURE" \
-  --candidate codex --candidate claude: 2>/dev/null); then
-  fail "empty model after colon unexpectedly succeeded with '$out'"
-fi
-ok "a bare-harness profile is skipped as unresolvable, never selected"
-
-# 8. The snapshot is read only from --snapshot; stdin is not a spelling.
-if out=$(call_choose --author grok:grok-4 --candidate claude:claude-opus-5 < "$FIXTURE" 2>/dev/null); then
-  fail "stdin snapshot unexpectedly succeeded with '$out'"
-fi
-ok "a missing --snapshot is a usage error even with stdin"
-
-# 9. Usage errors exit 2, never a park.
-if call_choose --snapshot "$FIXTURE" --candidate claude:claude-opus-5 >/dev/null 2>&1; then
-  fail "missing author unexpectedly succeeded"
-fi
-if call_choose --author grok:grok-4 --snapshot "$FIXTURE" >/dev/null 2>&1; then
-  fail "missing candidates unexpectedly succeeded"
-fi
-if call_choose --author grok:grok-4 --snapshot "$FIXTURE" \
-  --candidate frobnicate:model-x >/dev/null 2>&1; then
-  fail "unknown harness unexpectedly succeeded"
-fi
-call_choose --author grok:grok-4 --snapshot "$FIXTURE" claude:claude-opus-5 >/dev/null 2>&1; rc=$?
-[ "$rc" -eq 2 ] || fail "positional candidate exited $rc instead of 2"
-ok "usage errors fail closed with exit 2"
-
-# 10. A rejected snapshot is an error, never a quiet park.
-err=$(call_choose --author grok:grok-4 --snapshot "$BAD_SCHEMA" \
-  --candidate claude:claude-opus-5 2>&1); rc=$?
-[ "$rc" -ne 0 ] || fail "bad schema unexpectedly succeeded with '$err'"
-[ "$rc" -eq 2 ] || fail "bad schema exited $rc instead of 2"
-case "$err" in
-  *"error: quota snapshot rejected"*) ;;
-  *) fail "bad schema reported '$err' instead of a snapshot error" ;;
+# An active Astra-authored lane excludes the whole Codex family with the
+# author-family reason rather than an exhaustion label, even though the
+# Codex row is also exhausted here.
+W=$(fx_world w-author)
+fx_meta "$W" writer pi openai-codex/gpt-6-astra
+rc=$(run_refresh "$W" --snapshot "$Q_EXH")
+[ "$rc" = 0 ] || fail "author exclusion: expected exit 0, got $rc"
+[ "$(cat "$LAB/out")" = "reviewer-refresh: switched to=claude:claude-opus-5:medium" ] ||
+  fail "author exclusion: wrong selection '$(cat "$LAB/out")'"
+case "$(cat "$W/nm/firstmate-reviewer-switches.log")" in
+  *' reason=author-family:codex quota=eligible') ;;
+  *) fail "author exclusion: wrong switch reason '$(cat "$W/nm/firstmate-reviewer-switches.log")'" ;;
 esac
-if call_choose --author grok:grok-4 --snapshot "$MALFORMED" \
-  --candidate claude:claude-opus-5 >/dev/null 2>&1; then
-  fail "malformed snapshot unexpectedly succeeded"
-fi
-ok "rejected snapshots abort as errors, not parks"
+ok "active author family is excluded with its reason"
 
-for order in forward reverse; do
-  for state in exhausted healthy unknown missing; do
-    ACCOUNT_FIXTURE="$LAB/accounts.json"
-    jq --arg state "$state" --arg order "$order" '
-      .schemaVersion = 6 |
-      .providers = [
-        (.providers[1] | .accountKey = "default"),
-        (.providers[1] | .provider = "codex" | .accountKey = "codex-home"),
-        (.providers[0] | .accountKey = "openai-codex" |
-          if $state == "healthy" then
-            .quotaSemantics.effectiveAvailability[0].effectivePercentRemaining = 50 |
-            .quotaSemantics.effectiveAvailability[0].runway.status = "through_reset"
-          elif $state == "unknown" then
-            .quotaSemantics = {status: "unknown", effectiveAvailability: []}
-          else . end)
-      ] |
-      if $state == "missing" then .providers |= map(select(.accountKey != "openai-codex")) else . end |
-      if $order == "reverse" then .providers |= reverse else . end
-    ' "$FIXTURE" > "$ACCOUNT_FIXTURE"
-    out=$(call_choose --author grok:grok-4 --snapshot "$ACCOUNT_FIXTURE" \
-      --candidate pi:openai-codex/gpt-6-astra@codex --candidate claude:claude-opus-5); rc=$?
-    [ "$rc" -eq 0 ] || fail "account $order/$state: exit $rc with '$out'"
-    case "$state" in
-      exhausted) expected="skipped: pi:openai-codex/gpt-6-astra@codex quota-ineligible
-reviewer: claude claude-opus-5" ;;
-      healthy) expected="reviewer: pi openai-codex/gpt-6-astra" ;;
-      *) expected="deferred: pi:openai-codex/gpt-6-astra@codex quota-unmeasured (provider codex exposes no measured quota for gpt-6-astra)
-reviewer: claude claude-opus-5" ;;
-    esac
-    [ "$out" = "$expected" ] || fail "account $order/$state: expected '$expected', got '$out'"
-  done
+# The same exclusion holds when the incoming lane itself is Astra-authored:
+# the newly published record participates before any worker starts.
+W=$(fx_world w-incoming)
+fx_meta "$W" newcomer pi openai-codex/gpt-6-astra
+rc=$(run_refresh "$W" --snapshot "$Q_OK")
+[ "$rc" = 0 ] || fail "incoming author: expected exit 0, got $rc"
+[ "$(cat "$LAB/out")" = "reviewer-refresh: switched to=claude:claude-opus-5:medium" ] ||
+  fail "incoming author: Astra pinned despite active Astra authorship"
+ok "incoming Astra authorship participates in the union"
+
+# A cross-runtime author of the same OpenAI family is excluded identically;
+# changing only the runtime must not evade the union.
+W=$(fx_world w-crossrt)
+fx_meta "$W" writer codex codex_bengalfox
+rc=$(run_refresh "$W" --snapshot "$Q_OK")
+[ "$rc" = 0 ] || fail "cross-runtime author: expected exit 0, got $rc"
+[ "$(cat "$LAB/out")" = "reviewer-refresh: switched to=claude:claude-opus-5:medium" ] ||
+  fail "cross-runtime author: Codex family not excluded '$(cat "$LAB/out")'"
+ok "cross-runtime author family is excluded"
+
+# All candidates exhausted parks with the exact candidate-complete line,
+# and neither the config nor the switch record moves.
+W=$(fx_world w-park)
+fx_meta "$W" lane1 muse muse-spark
+cp "$W/nm/config.yaml" "$W/nm/config.yaml.orig"
+rc=$(run_refresh "$W" --snapshot "$Q_ALLEXH")
+[ "$rc" = 1 ] || fail "all exhausted: expected exit 1, got $rc"
+[ "$(cat "$LAB/out")" = "" ] || fail "all exhausted: park leaked to stdout"
+expected="park: no eligible reviewer (pi:openai-codex/gpt-6-astra=quota-exhausted, claude:claude-opus-5=quota-exhausted)"
+[ "$(cat "$LAB/err")" = "$expected" ] || fail "all exhausted: wrong park line '$(cat "$LAB/err")'"
+cmp -s "$W/nm/config.yaml.orig" "$W/nm/config.yaml" || fail "all exhausted: config changed on park"
+[ ! -e "$W/nm/firstmate-reviewer-switches.log" ] || fail "all exhausted: switch record created on park"
+ok "all exhausted parks with the exact candidate-complete line"
+
+# Known zero with a calm runway and unknown headroom with an exhausted
+# runway are both exhaustion, never unmeasured fallback.
+cat > "$LAB/quota-zero-calm.json" <<'JSON'
+{"generatedAt": "2030-01-01T00:00:00Z", "schemaVersion": 5, "providers": [
+{"provider": "codex", "quotaSemantics": {"status": "known", "effectiveAvailability": [{"scope": "all_models", "status": "known", "effectivePercentRemaining": 0, "runway": {"status": "through_reset"}}]}},
+{"provider": "claude", "quotaSemantics": {"status": "known", "effectiveAvailability": [{"scope": "all_models", "status": "known", "effectivePercentRemaining": 0, "runway": {"status": "through_reset"}}]}}
+]}
+JSON
+cat > "$LAB/quota-unknown-exhausted.json" <<'JSON'
+{"generatedAt": "2030-01-01T00:00:00Z", "schemaVersion": 5, "providers": [
+{"provider": "codex", "quotaSemantics": {"status": "known", "effectiveAvailability": [{"scope": "all_models", "status": "unknown"}, {"scope": "all_models", "status": "known", "effectivePercentRemaining": 0, "runway": {"status": "through_reset"}}]}},
+{"provider": "claude", "quotaSemantics": {"status": "known", "effectiveAvailability": [{"scope": "all_models", "status": "unknown"}, {"scope": "all_models", "status": "known", "effectivePercentRemaining": 0, "runway": {"status": "through_reset"}}]}}
+]}
+JSON
+rc=$(run_refresh "$W" --snapshot "$LAB/quota-zero-calm.json")
+[ "$rc" = 1 ] || fail "zero calm: expected park, got $rc"
+grep -Fq 'quota-exhausted' "$LAB/err" || fail "zero calm: not labeled exhaustion"
+rc=$(run_refresh "$W" --snapshot "$LAB/quota-unknown-exhausted.json")
+[ "$rc" = 1 ] || fail "unknown plus exhaustion: expected park, got $rc"
+grep -Fq 'quota-exhausted' "$LAB/err" || fail "unknown plus exhaustion: not labeled exhaustion"
+ok "measured zero and exhausted runway both park as exhaustion"
+
+# An active lane whose family cannot be resolved parks the whole refresh
+# naming that lane, even with healthy candidates waiting.
+W=$(fx_world w-unresauthor)
+fx_meta "$W" ghost pi default
+BEFORE_DIGEST=$(sha256sum "$W/nm/config.yaml" | awk '{print $1}')
+rc=$(run_refresh "$W" --snapshot "$Q_OK")
+[ "$rc" = 1 ] || fail "unresolved author: expected exit 1, got $rc"
+case "$(cat "$LAB/err")" in
+  "park: unresolved author family (lane=$W/fm/ghost, harness=pi, model=default)") ;;
+  *) fail "unresolved author: wrong park line '$(cat "$LAB/err")'" ;;
+esac
+[ "$(sha256sum "$W/nm/config.yaml" | awk '{print $1}')" = "$BEFORE_DIGEST" ] ||
+  fail "unresolved author: config touched"
+[ ! -e "$W/nm/firstmate-reviewer-switches.log" ] || fail "unresolved author: switch record created"
+ok "unresolved active author parks naming the lane"
+
+# An opaque broker alias as an author model is equally unresolvable.
+rm "$W/fm/state/ghost.meta"
+printf 'harness=pi\nkind=ship\nmode=no-mistakes\nmodel=openrouter/mystery-9\n' > "$W/fm/state/shade.meta"
+rc=$(run_refresh "$W" --snapshot "$Q_OK")
+[ "$rc" = 1 ] || fail "opaque author: expected exit 1, got $rc"
+grep -Fq "lane=$W/fm/shade" "$LAB/err" || fail "opaque author: lane not named"
+rm "$W/fm/state/shade.meta"
+ok "opaque author model parks"
+
+# An unresolvable candidate is skipped while a later resolved independent
+# candidate succeeds; a bare native Claude candidate resolves its family
+# while a bare multi-provider candidate cannot.
+W=$(fx_world w-unrescand)
+python3 - "$W/fm/config/crew-dispatch.json" <<'PYEOF'
+import json, sys
+path = sys.argv[1]
+with open(path) as handle:
+    doc = json.load(handle)
+doc['rules'][0]['use'] = [
+    {"harness": "pi"},
+    {"harness": "claude", "model": "claude-opus-5", "effort": "medium"},
+]
+with open(path, 'w') as handle:
+    json.dump(doc, handle)
+PYEOF
+rc=$(run_refresh "$W" --snapshot "$Q_OK")
+[ "$rc" = 0 ] || fail "unresolved candidate: expected exit 0, got $rc with '$(cat "$LAB/err")'"
+[ "$(cat "$LAB/out")" = "reviewer-refresh: switched to=claude:claude-opus-5:medium" ] ||
+  fail "unresolved candidate: later candidate did not succeed"
+[ "$(awk '/^  reviewer:/{f=1;next} f&&/agent:/{print $2;exit} f&&/^  [a-z_]/{exit}' "$W/nm/config.yaml")" = claude ] ||
+  fail "unresolved candidate: reviewer pin not rewritten"
+python3 - "$W/fm/config/crew-dispatch.json" <<'PYEOF'
+import json, sys
+path = sys.argv[1]
+with open(path) as handle:
+    doc = json.load(handle)
+doc['rules'][0]['use'] = [
+    {"harness": "claude"},
+    {"harness": "pi", "model": "openai-codex/gpt-6-astra", "effort": "low", "provider": "codex"},
+]
+with open(path, 'w') as handle:
+    json.dump(doc, handle)
+PYEOF
+cat > "$W/nm/config.yaml" <<'YAML'
+review_agents:
+  reviewer:
+    agent: muse
+    model: muse-spark
+    effort: low
+YAML
+rc=$(run_refresh "$W" --snapshot "$Q_OK")
+[ "$rc" = 0 ] || fail "bare native: expected exit 0, got $rc with '$(cat "$LAB/err")'"
+[ "$(cat "$LAB/out")" = "reviewer-refresh: switched to=claude:default:default" ] ||
+  fail "bare native: wrong selection '$(cat "$LAB/out")'"
+grep -Fq 'model: ""' "$W/nm/config.yaml" || fail "bare native: model scalar not cleared to empty"
+ok "unresolved candidates skip and bare native profiles resolve"
+
+# Binding cuts: a missing marker parks even when the pin matches an
+# unmarked prose rule, a duplicated marker parks, and a malformed marker
+# is an input error.
+W=$(fx_world w-binding)
+cp "$W/fm/config/crew-dispatch.json" "$W/fm/config/crew-dispatch.json.good"
+python3 - "$W/fm/config/crew-dispatch.json" <<'PYEOF'
+import json, sys
+path = sys.argv[1]
+with open(path) as handle:
+    doc = json.load(handle)
+del doc['rules'][0]['reviewer']
+with open(path, 'w') as handle:
+    json.dump(doc, handle)
+PYEOF
+rc=$(run_refresh "$W" --snapshot "$Q_OK")
+[ "$rc" = 1 ] || fail "missing marker: expected exit 1, got $rc"
+case "$(cat "$LAB/err")" in
+  "park: reviewer rule binding missing (config=$W/fm/config/crew-dispatch.json, selector=rules[].reviewer=true)") ;;
+  *) fail "missing marker: wrong park line '$(cat "$LAB/err")'" ;;
+esac
+python3 - "$W/fm/config/crew-dispatch.json.good" "$W/fm/config/crew-dispatch.json" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as handle:
+    doc = json.load(handle)
+doc['rules'].append(dict(doc['rules'][0], reviewer=True))
+with open(sys.argv[2], 'w') as handle:
+    json.dump(doc, handle)
+PYEOF
+rc=$(run_refresh "$W" --snapshot "$Q_OK")
+[ "$rc" = 1 ] || fail "ambiguous marker: expected exit 1, got $rc"
+grep -Fq 'binding ambiguous' "$LAB/err" || fail "ambiguous marker: wrong park line"
+grep -Fq 'matches=2' "$LAB/err" || fail "ambiguous marker: match count missing"
+python3 - "$W/fm/config/crew-dispatch.json" <<'PYEOF'
+import json, sys
+path = sys.argv[1]
+with open(path) as handle:
+    doc = json.load(handle)
+doc['rules'] = [dict(doc['rules'][0], reviewer=False)]
+with open(path, 'w') as handle:
+    json.dump(doc, handle)
+PYEOF
+rc=$(run_refresh "$W" --snapshot "$Q_OK")
+[ "$rc" = 2 ] || fail "false marker: expected exit 2, got $rc"
+grep -Fq 'error: reviewer rule binding is malformed' "$LAB/err" || fail "false marker: wrong diagnostic"
+ok "binding missing, ambiguous, and malformed cases refuse exactly"
+
+# Approval presence excludes: a rule-level approval skips every candidate,
+# and a profile-level approval skips that candidate even when it equals
+# the current pin. Removed spellings are usage errors, not inputs.
+W=$(fx_world w-approval)
+python3 - "$W/fm/config/crew-dispatch.json" <<'PYEOF'
+import json, sys
+path = sys.argv[1]
+with open(path) as handle:
+    doc = json.load(handle)
+doc['rules'][0]['approval'] = 'captain'
+with open(path, 'w') as handle:
+    json.dump(doc, handle)
+PYEOF
+rc=$(run_refresh "$W" --snapshot "$Q_OK")
+[ "$rc" = 1 ] || fail "rule approval: expected exit 1, got $rc"
+expected="park: no eligible reviewer (pi:openai-codex/gpt-6-astra=needs-approval, claude:claude-opus-5=needs-approval)"
+[ "$(cat "$LAB/err")" = "$expected" ] || fail "rule approval: wrong park line '$(cat "$LAB/err")'"
+python3 - "$W/fm/config/crew-dispatch.json" <<'PYEOF'
+import json, sys
+path = sys.argv[1]
+with open(path) as handle:
+    doc = json.load(handle)
+del doc['rules'][0]['approval']
+doc['rules'][0]['use'][0]['approval'] = 'captain'
+with open(path, 'w') as handle:
+    json.dump(doc, handle)
+PYEOF
+rc=$(run_refresh "$W" --snapshot "$Q_OK")
+[ "$rc" = 0 ] || fail "profile approval: expected exit 0, got $rc with '$(cat "$LAB/err")'"
+[ "$(cat "$LAB/out")" = "reviewer-refresh: switched to=claude:claude-opus-5:medium" ] ||
+  fail "profile approval: wrong selection '$(cat "$LAB/out")'"
+for flag in --author --candidate --needs-approval; do
+  if FM_HOME="$W/fm" NM_HOME="$W/nm" bash "$REFRESH" "$flag" x --snapshot "$Q_OK" >"$LAB/out" 2>"$LAB/err"; then
+    fail "removed spelling $flag unexpectedly accepted"
+  fi
+  grep -Fq 'error: unknown option' "$LAB/err" || fail "removed spelling $flag: wrong refusal"
 done
-ok "declared providers preserve the original account lane regardless of row order"
+if FM_HOME="$W/fm" NM_HOME="$W/nm" bash "$REFRESH" --snapshot "$Q_OK" extra >"$LAB/out" 2>"$LAB/err"; then
+  fail "positional candidate unexpectedly accepted"
+fi
+ok "approval excludes and removed spellings refuse"
+
+# Malformed envelopes are input errors, never parks and never unmeasured.
+W=$(fx_world w-malformed)
+rc=$(run_refresh "$W" --snapshot "$LAB/bad-schema.json")
+[ "$rc" = 2 ] || fail "bad schema: expected exit 2, got $rc"
+grep -Fq 'error: quota snapshot rejected' "$LAB/err" || fail "bad schema: wrong diagnostic"
+rc=$(run_refresh "$W" --snapshot "$LAB/malformed.json")
+[ "$rc" = 2 ] || fail "malformed snapshot: expected exit 2, got $rc"
+printf '%s\n' "not json" > "$LAB/stdin.txt"
+FM_HOME="$W/fm" NM_HOME="$W/nm" PATH="$FAKEBIN:$PATH" bash "$REFRESH" <"$LAB/stdin.txt" >"$LAB/out" 2>"$LAB/err"
+rc=$?
+[ "$rc" = 2 ] || fail "stdin snapshot: expected exit 2, got $rc"
+grep -Fq 'quota-axi snapshot capture failed' "$LAB/err" || fail "stdin snapshot: live capture not attempted"
+ok "malformed input fails as error, stdin is never a snapshot"
+
+# Unsupported config shapes refuse without writing: a duplicated reviewer
+# block, a flow-style reviewer, an unknown reviewer key, and a missing
+# reviewer block each exit 2 with the config byte-identical.
+W=$(fx_world w-shapes)
+BEFORE_DIGEST=$(sha256sum "$W/nm/config.yaml" | awk '{print $1}')
+python3 - "$W/nm/config.yaml" <<'PYEOF'
+import sys
+lines = open(sys.argv[1]).read().split('\n')
+for n, line in enumerate(lines):
+    if line == '  reviewer:':
+        lines[n] = '  reviewer: {agent: claude}'
+        break
+open(sys.argv[1], 'w').write('\n'.join(lines))
+PYEOF
+rc=$(run_refresh "$W" --snapshot "$Q_OK")
+[ "$rc" = 2 ] || fail "flow reviewer: expected exit 2, got $rc"
+grep -Fq 'unsupported shape' "$LAB/err" || fail "flow reviewer: wrong diagnostic"
+[ "$(sha256sum "$W/nm/config.yaml" | awk '{print $1}')" != "$BEFORE_DIGEST" ] ||
+  fail "flow reviewer: shape edit did not apply"
+python3 - "$W/nm/config.yaml" <<'PYEOF'
+import sys
+lines = open(sys.argv[1]).read().split('\n')
+for n, line in enumerate(lines):
+    if line == '  reviewer: {agent: claude}':
+        lines[n] = '  reviewer:'
+        lines.insert(n + 1, '    retries: 3')
+        break
+open(sys.argv[1], 'w').write('\n'.join(lines))
+PYEOF
+rc=$(run_refresh "$W" --snapshot "$Q_OK")
+[ "$rc" = 2 ] || fail "unknown key: expected exit 2, got $rc"
+grep -Fq 'unsupported shape' "$LAB/err" || fail "unknown key: wrong diagnostic"
+W=$(fx_world w-dupblock)
+printf '\nreview_agents:\n  reviewer:\n    agent: claude\n' >> "$W/nm/config.yaml"
+BEFORE_DIGEST=$(sha256sum "$W/nm/config.yaml" | awk '{print $1}')
+rc=$(run_refresh "$W" --snapshot "$Q_OK")
+[ "$rc" = 2 ] || fail "duplicated block: expected exit 2, got $rc"
+[ "$(sha256sum "$W/nm/config.yaml" | awk '{print $1}')" = "$BEFORE_DIGEST" ] ||
+  fail "duplicated block: refresh wrote despite the duplicate"
+grep -Fq 'missing or ambiguous' "$LAB/err" || fail "duplicated block: wrong diagnostic"
+ok "unsupported config shapes refuse safely"
+
+# A missing reviewer block is a safe refusal, and a missing record
+# directory fails before any config write.
+W=$(fx_world w-noblock)
+python3 - "$W/nm/config.yaml" <<'PYEOF'
+import sys
+lines = open(sys.argv[1]).read().split('\n')
+start = next(n for n, line in enumerate(lines) if line == 'review_agents:')
+end = next(n for n in range(start + 1, len(lines)) if lines[n] and not lines[n].startswith(' '))
+open(sys.argv[1], 'w').write('\n'.join(lines[:start] + lines[end:]))
+PYEOF
+rc=$(run_refresh "$W" --snapshot "$Q_OK")
+[ "$rc" = 2 ] || fail "missing block: expected exit 2, got $rc"
+grep -Fq 'reviewer block is missing' "$LAB/err" || fail "missing block: wrong diagnostic"
+W=$(fx_world w-recordfail)
+BEFORE_DIGEST=$(sha256sum "$W/nm/config.yaml" | awk '{print $1}')
+rc=$(run_refresh "$W" --snapshot "$Q_EXH" --record "$W/nm/no-such-dir/record.log")
+[ "$rc" = 2 ] || fail "missing record dir: expected exit 2, got $rc"
+grep -Fq 'switch record directory is missing' "$LAB/err" || fail "missing record dir: wrong diagnostic"
+[ "$(sha256sum "$W/nm/config.yaml" | awk '{print $1}')" = "$BEFORE_DIGEST" ] ||
+  fail "missing record dir: config written before the record failed"
+ok "missing block and record destination refuse before writing"
+
+# Unmeasured quota is fallback, not rejection: with only unmeasured rows
+# the first candidate is selected and recorded as unmeasured, while an
+# unmeasured current pin yields to a measured-eligible survivor.
+cat > "$LAB/quota-unmeasured.json" <<'JSON'
+{"generatedAt": "2030-01-01T00:00:00Z", "schemaVersion": 5, "providers": [
+{"provider": "codex", "quotaSemantics": {"status": "unknown", "effectiveAvailability": []}},
+{"provider": "claude", "quotaSemantics": {"status": "unknown", "effectiveAvailability": []}}
+]}
+JSON
+W=$(fx_world w-unmeasured)
+cat > "$W/nm/config.yaml" <<'YAML'
+review_agents:
+  reviewer:
+    agent: grok
+    model: grok-4
+    effort: low
+YAML
+rc=$(run_refresh "$W" --snapshot "$LAB/quota-unmeasured.json")
+[ "$rc" = 0 ] || fail "unmeasured only: expected exit 0, got $rc with '$(cat "$LAB/err")'"
+[ "$(cat "$LAB/out")" = "reviewer-refresh: switched to=pi:openai-codex/gpt-6-astra:low" ] ||
+  fail "unmeasured only: wrong selection '$(cat "$LAB/out")'"
+grep -Fq 'quota=unmeasured' "$W/nm/firstmate-reviewer-switches.log" ||
+  fail "unmeasured only: record hides the unmeasured state"
+cat > "$LAB/quota-codex-unknown.json" <<'JSON'
+{"generatedAt": "2030-01-01T00:00:00Z", "schemaVersion": 5, "providers": [
+{"provider": "codex", "quotaSemantics": {"status": "unknown", "effectiveAvailability": []}},
+{"provider": "claude", "quotaSemantics": {"status": "known", "effectiveAvailability": [{"scope": "all_models", "status": "known", "effectivePercentRemaining": 60, "runway": {"status": "through_reset"}}]}}
+]}
+JSON
+rc=$(run_refresh "$W" --snapshot "$Q_OK")
+[ "$rc" = 0 ] || fail "measured pin stays: expected exit 0, got $rc"
+[ "$(cat "$LAB/out")" = "" ] || fail "measured pin stays: rewrote to itself '$(cat "$LAB/out")'"
+[ "$(wc -l < "$W/nm/firstmate-reviewer-switches.log")" = 1 ] || fail "measured pin stays: extra record"
+rc=$(run_refresh "$W" --snapshot "$LAB/quota-codex-unknown.json")
+[ "$rc" = 0 ] || fail "unmeasured upgrade: expected exit 0, got $rc with '$(cat "$LAB/err")'"
+[ "$(cat "$LAB/out")" = "reviewer-refresh: switched to=claude:claude-opus-5:medium" ] ||
+  fail "unmeasured upgrade: wrong selection '$(cat "$LAB/out")'"
+case "$(tail -1 "$W/nm/firstmate-reviewer-switches.log")" in
+  *' switched from=pi:openai-codex/gpt-6-astra:low to=claude:claude-opus-5:medium reason=unmeasured-upgrade quota=eligible') ;;
+  *) fail "unmeasured upgrade: wrong record '$(tail -1 "$W/nm/firstmate-reviewer-switches.log")'" ;;
+esac
+ok "unmeasured quota falls back explicitly and yields to measured"
+
+# A pin outside the bound rule moves when a survivor exists and parks
+# naming its own staleness when none does.
+W=$(fx_world w-outsider)
+cat > "$W/nm/config.yaml" <<'YAML'
+review_agents:
+  reviewer:
+    agent: grok
+    model: grok-4
+    effort: low
+YAML
+rc=$(run_refresh "$W" --snapshot "$Q_OK")
+[ "$rc" = 0 ] || fail "outsider switch: expected exit 0, got $rc with '$(cat "$LAB/err")'"
+case "$(cat "$W/nm/firstmate-reviewer-switches.log")" in
+  *' switched from=grok:grok-4:low to=pi:openai-codex/gpt-6-astra:low reason=not-in-review-rule quota=eligible') ;;
+  *) fail "outsider switch: wrong record '$(cat "$W/nm/firstmate-reviewer-switches.log")'" ;;
+esac
+rc=$(run_refresh "$W" --snapshot "$Q_ALLEXH")
+[ "$rc" = 1 ] || fail "outsider park: expected exit 1, got $rc"
+grep -Fq 'no eligible reviewer' "$LAB/err" || fail "outsider park: wrong park line"
+ok "pin outside the rule switches or parks truthfully"
+
+# A registered local secondary home contributes its authors through the
+# primary: an Astra-authored lane in the secondary excludes Codex family
+# candidates for a refresh invoked from that secondary.
+W=$(fx_world w-union)
+mkdir -p "$W/fm/sub/state" "$W/fm/sub/config" "$W/fm/sub/data"
+printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' "$W/fm" > "$W/fm/sub/.fm-secondmate-parent"
+printf 'harness=pi\nkind=ship\nmode=no-mistakes\nmodel=openai-codex/gpt-6-astra\n' > "$W/fm/sub/state/second.meta"
+printf -- '- sub - Alpha scope (home: %s; scope: alpha; projects: none; added 2030-01-01)\n' "$W/fm/sub" > "$W/fm/data/secondmates.md"
+FM_HOME="$W/fm/sub" NM_HOME="$W/nm" PATH="$FAKEBIN:$PATH" bash "$REFRESH" --snapshot "$Q_OK" >"$LAB/out" 2>"$LAB/err"
+[ "$?" = 0 ] || fail "union: expected exit 0 with '$(cat "$LAB/err")'"
+[ "$(cat "$LAB/out")" = "reviewer-refresh: switched to=claude:claude-opus-5:medium" ] ||
+  fail "union: secondary author not excluded '$(cat "$LAB/out")'"
+grep -Fq 'reason=author-family:codex' "$W/nm/firstmate-reviewer-switches.log" ||
+  fail "union: wrong switch reason"
+ok "secondary home authors join the union through the primary"
+
+# The global lock serializes overlapping refreshes: while the first holds
+# it inside its snapshot capture, the second writes nothing and starts no
+# switch; after release the loser re-reads the winner's pin and stays
+# silent instead of appending a duplicate switch.
+W=$(fx_world w-lock)
+cat > "$LAB/gate-quota-axi" <<SH
+#!/usr/bin/env bash
+if [ ! -e "$LAB/gate-entered" ]; then
+  : > "$LAB/gate-entered"
+  while [ ! -e "$LAB/gate-open" ]; do sleep 0.05; done
+fi
+cat "$Q_EXH"
+SH
+chmod +x "$LAB/gate-quota-axi"
+GATEBIN="$LAB/gatebin"
+mkdir -p "$GATEBIN"
+cp "$LAB/gate-quota-axi" "$GATEBIN/quota-axi"
+rm -f "$LAB/gate-entered" "$LAB/gate-open"
+PATH="$GATEBIN:$PATH" FM_HOME="$W/fm" NM_HOME="$W/nm" bash "$REFRESH" >"$LAB/out-a" 2>"$LAB/err-a" &
+A_PID=$!
+for _ in $(seq 1 200); do
+  [ -e "$LAB/gate-entered" ] && break
+  sleep 0.05
+done
+[ -e "$LAB/gate-entered" ] || fail "lock: first refresh never reached capture"
+PATH="$GATEBIN:$PATH" FM_HOME="$W/fm" NM_HOME="$W/nm" bash "$REFRESH" >"$LAB/out-b" 2>"$LAB/err-b" &
+B_PID=$!
+sleep 0.5
+kill -0 "$B_PID" 2>/dev/null || fail "lock: second refresh exited while the first holds the lock"
+[ ! -e "$W/nm/firstmate-reviewer-switches.log" ] || fail "lock: switch recorded while the first holds the lock"
+: > "$LAB/gate-open"
+wait "$A_PID"
+A_RC=$?
+wait "$B_PID"
+B_RC=$?
+[ "$A_RC" = 0 ] || fail "lock: first refresh failed with $A_RC"
+[ "$B_RC" = 0 ] || fail "lock: second refresh failed with $B_RC"
+[ "$(cat "$LAB/out-a")" = "reviewer-refresh: switched to=claude:claude-opus-5:medium" ] ||
+  fail "lock: first refresh did not switch"
+[ "$(cat "$LAB/out-b")" = "" ] || fail "lock: loser appended a duplicate switch"
+[ "$(wc -l < "$W/nm/firstmate-reviewer-switches.log")" = 1 ] || fail "lock: duplicate switch records"
+ok "overlapping refreshes serialize under the global lock"
+
+# Schema-6 account binding: a declared provider keeps the original
+# candidate lane, so an exhausted account row selects away even when a
+# healthy row for another account exists; and a lane with no row falls
+# back to its default row rather than to another lane.
+cat > "$LAB/quota6-accounts.json" <<'JSON'
+{"generatedAt": "2030-01-01T00:00:00Z", "schemaVersion": 6, "providers": [
+{"provider": "codex", "accountKey": "openai-codex", "quotaSemantics": {"status": "known", "effectiveAvailability": [{"scope": "all_models", "status": "known", "effectivePercentRemaining": 0, "runway": {"status": "exhausted_now"}}]}},
+{"provider": "codex", "accountKey": "codex-home", "quotaSemantics": {"status": "known", "effectiveAvailability": [{"scope": "all_models", "status": "known", "effectivePercentRemaining": 80, "runway": {"status": "through_reset"}}]}},
+{"provider": "claude", "accountKey": "default", "quotaSemantics": {"status": "known", "effectiveAvailability": [{"scope": "all_models", "status": "known", "effectivePercentRemaining": 60, "runway": {"status": "through_reset"}}]}}
+]}
+JSON
+W=$(fx_world w-acct)
+rc=$(run_refresh "$W" --snapshot "$LAB/quota6-accounts.json")
+[ "$rc" = 0 ] || fail "account lane: expected exit 0, got $rc with '$(cat "$LAB/err")'"
+[ "$(cat "$LAB/out")" = "reviewer-refresh: switched to=claude:claude-opus-5:medium" ] ||
+  fail "account lane: borrowed another account quota '$(cat "$LAB/out")'"
+cat > "$LAB/quota6-default.json" <<'JSON'
+{"generatedAt": "2030-01-01T00:00:00Z", "schemaVersion": 6, "providers": [
+{"provider": "codex", "accountKey": "other", "quotaSemantics": {"status": "known", "effectiveAvailability": [{"scope": "all_models", "status": "known", "effectivePercentRemaining": 0, "runway": {"status": "exhausted_now"}}]}},
+{"provider": "codex", "accountKey": "default", "quotaSemantics": {"status": "known", "effectiveAvailability": [{"scope": "all_models", "status": "known", "effectivePercentRemaining": 70, "runway": {"status": "through_reset"}}]}}
+]}
+JSON
+rc=$(run_refresh "$W" --snapshot "$LAB/quota6-default.json")
+[ "$rc" = 0 ] || fail "default fallback: expected exit 0, got $rc with '$(cat "$LAB/err")'"
+[ "$(cat "$LAB/out")" = "reviewer-refresh: switched to=pi:openai-codex/gpt-6-astra:low" ] ||
+  fail "default fallback: default row not used '$(cat "$LAB/out")'"
+case "$(tail -1 "$W/nm/firstmate-reviewer-switches.log")" in
+  *' reason=unmeasured-upgrade quota=eligible') ;;
+  *) fail "default fallback: wrong record '$(tail -1 "$W/nm/firstmate-reviewer-switches.log")'" ;;
+esac
+ok "schema-6 account binding keeps the original lane with default fallback"
+
+# A schema-6 codex-native row binds the native lane while the rule keeps
+# its declared spelling.
+cat > "$LAB/quota6-native.json" <<'JSON'
+{"generatedAt": "2030-01-01T00:00:00Z", "schemaVersion": 6, "providers": [
+{"provider": "codex", "accountKey": "codex-home", "quotaSemantics": {"status": "known", "effectiveAvailability": [{"scope": "all_models", "status": "known", "effectivePercentRemaining": 80, "runway": {"status": "through_reset"}}]}}
+]}
+JSON
+W=$(fx_world w-native)
+python3 - "$W/fm/config/crew-dispatch.json" <<'PYEOF'
+import json, sys
+path = sys.argv[1]
+with open(path) as handle:
+    doc = json.load(handle)
+doc['rules'][0]['use'] = [
+    {"harness": "codex", "model": "codex_bengalfox", "effort": "low"},
+]
+with open(path, 'w') as handle:
+    json.dump(doc, handle)
+PYEOF
+rc=$(run_refresh "$W" --snapshot "$LAB/quota6-native.json")
+[ "$rc" = 0 ] || fail "native binding: expected exit 0, got $rc with '$(cat "$LAB/err")'"
+[ "$(cat "$LAB/out")" = "reviewer-refresh: switched to=codex:codex_bengalfox:low" ] ||
+  fail "native binding: wrong selection '$(cat "$LAB/out")'"
+ok "schema-6 codex-native row binds the native lane"

@@ -185,8 +185,8 @@ if help=$("$BIN/fm-quota-choose.sh" --help 2>&1); then
   fail "help unexpectedly exited zero"
 fi
 printf '%s\n' "$help" | grep -Fq \
-  "candidate order and every candidate's provider is the harness's primary family." \
-  || fail "help omitted the multi-provider usage restriction"
+  "stays eligible behind every measured-eligible" \
+  || fail "help omitted the unmeasured-fallback contract"
 if printf '%s\n' "$help" | grep -Fq 'set -u'; then
   fail "help leaked executable source"
 fi
@@ -229,15 +229,13 @@ out=$(call_choose --snapshot "$LAB/captured.json" --candidate omp:openai-codex/c
 [ "$out" = "omp openai-codex/codex_other" ] || fail "omp prefix: expected the provider-wide codex quota to select the prefixed model, got '$out'"
 ok "omp openai-codex prefix matches the bare codex model scope"
 
-if err=$(call_choose --snapshot "$LAB/captured.json" --candidate omp:ollama/qwen3:8b --candidate claude:claude-3-5-sonnet 2>&1); then
-  fail "unmapped omp prefix unexpectedly selected a later candidate"
-fi
-[ "$err" = "error: omp quota mapping covers only the openai-codex and claude-bridge prefixes: ollama/qwen3:8b" ] || fail "unmapped omp prefix returned: $err"
-if err=$(call_choose --snapshot "$LAB/captured.json" --candidate omp 2>&1); then
-  fail "bare omp candidate unexpectedly selected"
-fi
-[ "$err" = "error: omp quota mapping covers only the openai-codex and claude-bridge prefixes: default" ] || fail "bare omp candidate returned: $err"
-ok "omp without a mapped prefix fails closed"
+out=$(call_choose --snapshot "$LAB/captured.json" --candidate omp:ollama/qwen3:8b --candidate claude:claude-3-5-sonnet)
+[ "$out" = "claude claude-3-5-sonnet" ] || fail "unmapped omp prefix: measured candidate should win, got '$out'"
+out=$(call_choose --snapshot "$LAB/captured.json" --candidate omp)
+[ "$out" = "omp default" ] || fail "bare omp: unmeasured fallback should select, got '$out'"
+out=$(call_choose --snapshot "$LAB/captured.json" --candidate omp:ollama/qwen3:8b --candidate cursor:default)
+[ "$out" = "omp ollama/qwen3:8b" ] || fail "unmeasured order: earliest unmeasured should win, got '$out'"
+ok "omp without a mapped prefix is unmeasured uncertainty, not rejection"
 
 out=$(call_choose --snapshot "$LAB/captured.json" --candidate codex:default)
 [ "$out" = "codex default" ] || fail "default scope: expected provider-wide quota, got '$out'"
@@ -253,10 +251,11 @@ fi
 [ "$err" = "error: unknown harness: bogus" ] || fail "unknown harness returned: $err"
 ok "unknown harness fails closed"
 
-if err=$(call_choose --snapshot "$LAB/captured.json" --candidate claude:default --candidate rovo:default 2>&1); then
-  fail "trailing unsupported harness was hidden by an earlier selection"
-fi
-[ "$err" = "error: unknown harness: rovo" ] || fail "trailing unsupported harness returned: $err"
+out=$(call_choose --snapshot "$LAB/captured.json" --candidate claude:default --candidate rovo:default)
+[ "$out" = "claude default" ] || fail "unmapped supported harness: measured candidate should win, got '$out'"
+out=$(call_choose --snapshot "$LAB/captured.json" --candidate rovo:default)
+[ "$out" = "rovo default" ] || fail "unmapped supported harness alone should select as unmeasured, got '$out'"
+ok "supported harnesses without quota mappings stay eligible as unmeasured"
 
 if err=$(call_choose --snapshot "$LAB/captured.json" --candidate claude:default --candidate 'claude:' 2>&1); then
   fail "trailing empty model was hidden by an earlier selection"
@@ -305,11 +304,9 @@ ok "exhausted runway vetoes unknown headroom"
 
 jq '(.providers[] | select(.provider == "claude").quotaSemantics.effectiveAvailability) = [{"scope":"all_models","status":"unknown","runway":{"status":"unknown"}}]' \
   "$LAB/captured.json" > "$KNOWN_UNKNOWN"
-if out=$(call_choose --snapshot "$KNOWN_UNKNOWN" --candidate claude:default 2>/dev/null); then
-  fail "unknown headroom unexpectedly dispatched"
-fi
-[ "$out" = "none" ] || fail "unknown headroom returned: $out"
-ok "unknown headroom is not positive quota"
+out=$(call_choose --snapshot "$KNOWN_UNKNOWN" --candidate claude:default)
+[ "$out" = "claude default" ] || fail "unknown headroom should select as unmeasured, got '$out'"
+ok "unknown headroom is unmeasured fallback, not positive quota"
 
 jq '(.providers[] | select(.provider == "claude").quotaSemantics.status) = "partial" |
     (.providers[] | select(.provider == "claude").quotaSemantics.effectiveAvailability) += [{"scope":"model:unmeasured","status":"unknown","runway":{"status":"unknown"}}]' \
@@ -385,11 +382,9 @@ quota[0]:
 exhaustion[0]:
 attention[0]:
 TOON
-if out=$(call_choose --snapshot "$EMPTY_TOON" --candidate claude:default 2>/dev/null); then
-  fail "zero-row TOON unexpectedly dispatched"
-fi
-[ "$out" = "none" ] || fail "zero-row TOON returned: $out"
-ok "zero-row TOON has no positive quota"
+out=$(call_choose --snapshot "$EMPTY_TOON" --candidate claude:default)
+[ "$out" = "claude default" ] || fail "zero-row TOON should select as unmeasured, got '$out'"
+ok "zero-row TOON is unmeasured fallback"
 
 cat > "$EMPTY_ARRAY_TOON" <<'TOON'
 bin: ~/.local/bin/quota-axi
@@ -402,11 +397,9 @@ attention[1]{provider,scope,kind,detail,remedy}:
 help[1]:
   Run `quota-axi --full` for windows, pace, reserve, and account evidence
 TOON
-if out=$(call_choose --snapshot "$EMPTY_ARRAY_TOON" --candidate claude:default 2>/dev/null); then
-  fail "empty-array TOON unexpectedly dispatched"
-fi
-[ "$out" = "none" ] || fail "empty-array TOON returned: $out"
-ok "empty-array TOON has no positive quota"
+out=$(call_choose --snapshot "$EMPTY_ARRAY_TOON" --candidate claude:default)
+[ "$out" = "claude default" ] || fail "empty-array TOON should select as unmeasured, got '$out'"
+ok "empty-array TOON is unmeasured fallback"
 
 cat > "$INLINE_ATTENTION_TOON" <<'TOON'
 bin: ~/.local/bin/quota-axi
@@ -415,11 +408,9 @@ quota: []
 exhaustion: []
 attention: [{"provider":"claude","scope":"all_models","kind":"unmeasurable","detail":"unknown quota","remedy":"none"}]
 TOON
-if out=$(call_choose --snapshot "$INLINE_ATTENTION_TOON" --candidate claude:default 2>/dev/null); then
-  fail "inline attention TOON unexpectedly dispatched"
-fi
-[ "$out" = "none" ] || fail "inline attention TOON returned: $out"
-ok "inline attention TOON has no positive quota"
+out=$(call_choose --snapshot "$INLINE_ATTENTION_TOON" --candidate claude:default)
+[ "$out" = "claude default" ] || fail "inline attention TOON should select as unmeasured, got '$out'"
+ok "inline attention TOON is unmeasured fallback"
 
 cat > "$WHITESPACE_ATTENTION_TOON" <<'TOON'
 bin: ~/.local/bin/quota-axi
@@ -537,11 +528,9 @@ fi
 [ "$out" = "none" ] || fail "quoted exhausted model scope returned: $out"
 ok "quoted TOON scope vetoes dispatch"
 
-if out=$(call_choose --snapshot "$LAB/captured.json" --candidate cursor:default 2>/dev/null); then
-  fail "provider-level unknown quota unexpectedly dispatched"
-fi
-[ "$out" = "none" ] || fail "provider-level unknown quota returned: $out"
-ok "provider-level unknown quota is not positive"
+out=$(call_choose --snapshot "$LAB/captured.json" --candidate cursor:default)
+[ "$out" = "cursor default" ] || fail "provider-level unknown quota should select as unmeasured, got '$out'"
+ok "provider-level unknown quota is unmeasured fallback"
 
 jq '.providers += [{"provider":"meta","windows":[],"quotaSemantics":{"status":"known","effectiveAvailability":[{"scope":"all_models","status":"known","effectivePercentRemaining":25,"runway":{"status":"through_reset"}}]}}]' \
   "$LAB/captured.json" > "$MUSE_POSITIVE"
@@ -559,11 +548,9 @@ ok "Muse uses Meta quota"
 
 jq '.providers += [{"provider":"agy","windows":[],"quotaSemantics":{"status":"known","effectiveAvailability":[{"scope":"all_models","status":"known","effectivePercentRemaining":25,"runway":{"status":"through_reset"}}]}}]' \
   "$LAB/captured.json" > "$AGY_POSITIVE"
-if err=$(call_choose --snapshot "$AGY_POSITIVE" --candidate agy:default 2>&1); then
-  fail "legacy quota chooser unexpectedly accepted Agy"
-fi
-printf '%s\n' "$err" | grep -F 'unknown harness: agy' >/dev/null || fail "legacy Agy rejection changed: $err"
-ok "Agy remains resolver-only"
+out=$(call_choose --snapshot "$AGY_POSITIVE" --candidate agy:default)
+[ "$out" = "agy default" ] || fail "measured Agy quota should select through its own row, got '$out'"
+ok "Agy measures its own quota row"
 
 jq '.providers += [.providers[] | select(.provider == "claude")]' "$LAB/captured.json" > "$DUPLICATE"
 if err=$(call_choose --snapshot "$DUPLICATE" --candidate claude:default 2>&1); then
@@ -613,11 +600,9 @@ ok "invalid runway status fails closed"
 
 jq '(.providers[] | select(.provider == "claude").quotaSemantics.effectiveAvailability) = [{"scope":"model:other","status":"known","effectivePercentRemaining":0,"runway":{"status":"exhausted_now"}}]' \
   "$LAB/captured.json" > "$NO_APPLICABLE"
-if out=$(call_choose --snapshot "$NO_APPLICABLE" --candidate claude:fable 2>/dev/null); then
-  fail "candidate without applicable quota unexpectedly dispatched"
-fi
-[ "$out" = "none" ] || fail "missing applicable quota returned: $out"
-ok "missing applicable quota is not positive"
+out=$(call_choose --snapshot "$NO_APPLICABLE" --candidate claude:fable)
+[ "$out" = "claude fable" ] || fail "missing applicable quota should select as unmeasured, got '$out'"
+ok "missing applicable quota is unmeasured fallback"
 
 jq '(.providers[] | select(.provider == "claude").quotaSemantics.effectiveAvailability) = [
       {"scope":"all_models","status":"known","effectivePercentRemaining":10,"runway":{"status":"exhausted_now"}},
@@ -731,5 +716,69 @@ ok "schema 6 TOON with the accountKey column is accepted"
 
 [ "$(wc -l < "$CALLS" | tr -d '[:space:]')" = 1 ] || fail "helper took an additional quota snapshot"
 ok "helper reuses the captured quota snapshot"
+
+# The family resolver is the single identity owner: exact mappings across
+# native, multi-provider, brokered, and runtime-named spellings, with every
+# unresolvable spelling failing closed instead of inheriting a name.
+while IFS='|' read -r harness model want; do
+  got=
+  got=$(QUOTA_AXI_CALLS="$CALLS" QUOTA_AXI_FIXTURE="$FIXTURE" PATH="$FAKEBIN:$PATH" \
+    bash -c '. "$0/fm-quota-axi-lib.sh"; fm_quota_provider_for_harness "$1" "$2"' "$BIN" "$harness" "$model" 2>/dev/null) || got=
+  [ "$got" = "$want" ] || fail "family $harness/${model:-bare}: expected '${want:-unresolved}', got '${got:-unresolved}'"
+done <<'CASES'
+pi|openai-codex/gpt-6-astra|codex
+pi|anthropic/claude-opus-5|claude
+pi|antigravity/gemini-3.8-flash|gemini
+opencode|anthropic/claude-opus-5|claude
+omp|openai-codex/gpt-6-astra|codex
+gemini|gemini-3.8-flash|gemini
+muse|muse-spark-1.3|meta
+claude||claude
+claude|claude-opus-5|claude
+claude|openai-codex/gpt-6||
+pi|default|
+pi||
+cursor||
+cursor|anthropic/claude-opus-5|claude
+agy||
+rovo||
+pi|model:openai-codex/gpt-6|codex
+pi|openrouter/z-ai/glm-4|zai
+pi|openrouter/mystery-9|
+codex|codex_bengalfox|codex
+grok|grok-4|grok
+kimi|kimi-k2|kimi
+pi|xai/grok-4|grok
+gemini|gpt-5|
+bogus|x|
+CASES
+ok "family resolver maps spellings and fails closed"
+
+# The availability owner reports one verdict with the generic rank, so
+# measured-eligible always sorts before unmeasured and exhausted never
+# dispatches; a declared provider binds the original lane.
+avail() {
+  QUOTA_AXI_CALLS="$CALLS" QUOTA_AXI_FIXTURE="$FIXTURE" PATH="$FAKEBIN:$PATH" \
+    bash -c '. "$0/fm-quota-axi-lib.sh"; fm_quota_effective_for_provider_model "$1" "$2" "$3"' \
+    "$BIN" "$2" "$3" "$4" < "$1"
+}
+[ "$(avail "$LAB/captured.json" claude claude-3-5-sonnet '')" = "$(printf 'eligible\t0\tremaining=0.5')" ] ||
+  fail "availability eligible shape wrong"
+[ "$(avail "$LAB/captured.json" codex model:codex_bengalfox '')" = "$(printf 'exhausted\t2\texhausted-runway')" ] ||
+  fail "availability exhausted shape wrong"
+[ "$(avail "$KNOWN_UNKNOWN" claude default '')" = "$(printf 'unmeasured\t1\tunmeasured')" ] ||
+  fail "availability unmeasured shape wrong"
+[ "$(avail "$LAB/captured.json" pi openai-codex/gpt-6 '')" = "$(printf 'unmeasured\t1\tunmeasured')" ] ||
+  fail "unbound multi-provider route should be unmeasured"
+[ "$(avail "$LAB/captured.json" omp ollama/qwen '')" = "$(printf 'unmeasured\t1\tunmeasured')" ] ||
+  fail "unmapped omp prefix should be unmeasured"
+if avail "$LAB/captured.json" claude default 'Codex' >/dev/null 2>&1; then
+  fail "malformed declared provider unexpectedly resolved"
+fi
+if printf '%s\n' 'garbage' | QUOTA_AXI_CALLS="$CALLS" QUOTA_AXI_FIXTURE="$FIXTURE" PATH="$FAKEBIN:$PATH" \
+  bash -c '. "$0/fm-quota-axi-lib.sh"; fm_quota_effective_for_provider_model claude default ""' "$BIN" >/dev/null 2>&1; then
+  fail "malformed snapshot unexpectedly resolved"
+fi
+ok "availability owner reports verdict, rank, and reason once"
 
 printf '# all fm-quota-choose tests passed\n'
