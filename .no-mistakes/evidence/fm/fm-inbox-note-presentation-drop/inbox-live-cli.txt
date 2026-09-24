@@ -1,0 +1,11 @@
+NOTE: queued 1790228084-QDjQgR
+  approve canary before release
+  firstmate will pick this up at its next check.
+FIRST DRAIN:
+1790228084	1	check	inbox:1790228084-QDjQgR	check: captain inbox note 1790228084-QDjQgR - approve canary before release
+ACK FROM STDERR: bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 1074763.1790228084.4eEG9J
+PENDING ROW AFTER ACK: 1790228084	1	check	inbox:1790228084-QDjQgR	check: captain inbox note 1790228084-QDjQgR - approve canary before release
+NEXT DRAIN:
+1790228084	1	check	inbox:1790228084-QDjQgR	check: captain inbox note 1790228084-QDjQgR - approve canary before release
+acked 1790228084-QDjQgR
+HANDLED: row removed after note acknowledgement
