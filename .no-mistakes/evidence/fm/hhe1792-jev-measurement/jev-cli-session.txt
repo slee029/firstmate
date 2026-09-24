@@ -1,0 +1,8 @@
+Isolated operator session: append decision, record supervisor hold, inspect report, try late spawn
+jev-decisions:
+  decisions: 1   with outcome: 1
+  class: Escalation E1 bounded adjudication   n=1   clear=0% ambiguous=0% escalate=100% error=0%   outcomes=1 followed=0 overridden=0 held=1 declined=0
+  note: token counts are recorded per call but are not a spend measure
+persisted records: {"kind":"decision","decision_id":"live-e1","took":null,"source":null,"note":null}
+{"kind":"outcome","decision_id":"live-e1","took":"held","source":"supervisor","note":"await captain"}
+log mode: 600

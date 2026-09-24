@@ -1,0 +1,2 @@
+{"schema_version":1,"kind":"decision","decision_id":"live-1","task":"task-1","status":"clear","resolved_when":"E1 bounded adjudication","choice_when":"E2 hard adjudication","profile":{"harness":"pi","model":"sonnet","effort":"high"}}
+{"schema_version":1,"kind":"outcome","decision_id":"live-1","at":1790256617,"source":"supervisor","took":"held","profile":null,"followed":null,"note":"captain review"}

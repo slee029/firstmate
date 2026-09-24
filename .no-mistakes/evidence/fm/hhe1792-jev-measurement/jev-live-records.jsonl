@@ -1,0 +1,2 @@
+{"schema_version":1,"kind":"decision","decision_id":"live-1","task":"escalation-1","status":"escalate","choice_when":"E2 initial","resolved_when":"E1 bounded adjudication","resolved":"rule_1","profile":null}
+{"schema_version":1,"kind":"outcome","decision_id":"live-1","at":1790257509,"source":"supervisor","took":"held","profile":null,"followed":null,"note":"captain review"}

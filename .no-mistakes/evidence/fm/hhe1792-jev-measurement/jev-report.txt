@@ -1,0 +1,5 @@
+jev-decisions:
+  decisions: 1   with outcome: 1
+  class: E1 bounded adjudication   n=1   clear=100% ambiguous=0% escalate=0% error=0%   outcomes=1 followed=0 overridden=0 held=1 declined=0
+  note: token counts are recorded per call but are not a spend measure
+log_mode=600
