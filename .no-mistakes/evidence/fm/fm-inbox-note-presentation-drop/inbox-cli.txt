@@ -1,0 +1,12 @@
+queued 1790242385-aRCnlH
+  Approve the deployment after canary
+  firstmate will pick this up at its next check.
+1790242385	1	check	inbox:1790242385-aRCnlH	check: captain inbox note 1790242385-aRCnlH - Approve the deployment after canary
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 1284224.1790242385.GfPTDv
+ACK: bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 1284224.1790242385.GfPTDv
+NEXT WAKE:
+1790242385	1	check	inbox:1790242385-aRCnlH	check: captain inbox note 1790242385-aRCnlH - Approve the deployment after canary
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 1284224.1790242385.GfPTDv
+acked 1790242385-aRCnlH
+ACK AFTER HANDLING:
+Remaining inbox wake rows: 0
