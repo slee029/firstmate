@@ -1,0 +1,1 @@
+SHADOW ONLY (no authority; handle every wake normally): event=retained-wait attention=declared_wait; event=merge-wait attention=declared_wait; event=ambiguous-quiet attention=unknown; event=contradictory attention=unknown; event=prompt-injection attention=unknown; event=quoted-completion attention=unknown; event=new-approval attention=inspect; event=quota-idle attention=unknown
