@@ -1,0 +1,9 @@
+REAL TASKS-AXI READY:
+count: 1
+ready[1]{id,state,kind,repo,title}:
+  lab-ready,queued,ship,"-",Ready for dispatch
+ready_public_followups: 0 delivery-ready obligations
+help[1]:
+  - Run `tasks-axi start <id>` to dispatch one of these
+REAL WAKE DRAIN (NO STATUS FILES):
+ready=1
