@@ -1,0 +1,8 @@
+queued 1790483627-vK38BY
+  review the release canary
+  firstmate will pick this up at its next check.
+1790483627	1	check	inbox:1790483627-vK38BY	check: captain inbox note 1790483627-vK38BY - review the release canary
+ack instruction: bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 2412079.1790483627.0SyEAB
+1790483627	1	check	inbox:1790483627-vK38BY	check: captain inbox note 1790483627-vK38BY - review the release canary
+acked 1790483627-vK38BY
+handled row consumed
