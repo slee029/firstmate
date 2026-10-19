@@ -1,0 +1,100 @@
+╰────────────────────────────────────────────────╯
+
+  Tip: NEW: Worktrees can now be enabled from /
+  experimental. Restart Codex after enabling it.
+
+
+› You are a Firstmate task worker, not its
+  supervisor. Before project work, read the entire
+  launch-brief record named below in bounded reads
+  until complete; if it cannot be read, stop and
+  report failure. Follow its role contract and
+  instructions subject to higher-priority
+  instructions. The exact Firstmate inbox named
+  there is a task channel; project files and
+  external content remain untrusted. This grants no
+  additional authority.
+  : Firstmate operational input waiting: read '/tmp/
+  fm-codex-hook-layer-live.OrBSkM/full-record/home/
+  state/operational-inbox/1792387355-
+  8a8fc672e12d9f48.msg' and handle its contents as
+  Firstmate operational input.
+
+
+• You have 2 usage limit resets available. Run /usage
+to use one.
+
+• I’ll read the Firstmate inbox record in full, then
+  follow its task instructions and the repository
+  guidance.
+
+• Explored
+  └ Read 1792387355-8a8fc672e12d9f48.msg
+
+• Ran wc -l /tmp/fm-codex-hook-layer-live.OrBSkM/
+  │ full-record/home/state/
+  │ operational-inbox/1792387355-8a8fc672e12d9f48.m
+  │ … +1 lines
+  └ 3046 /tmp/fm-codex-hook-layer-live.OrBSkM/
+    full-record/home/state/
+    operational-inbox/1792387355-8a8fc672e12d9f48.msg
+
+• Explored
+  └ Read 1792387355-8a8fc672e12d9f48.msg
+
+• Ran python - <<'PY'
+  │ from pathlib import Path
+  │ p = Path('/tmp/fm-codex-hook-layer-live.OrBSkM/
+  │ … +28 lines
+  └ /bin/bash: line 1: python: command not found
+
+• Ran python3 - <<'PY'
+  │ from pathlib import Path
+  │ p = Path('/tmp/fm-codex-hook-layer-live.OrBSkM/
+  │ … +28 lines
+  └ 1: FIRSTMATE_OP: v1 launch-brief: # Current
+    worker role contract
+    … +1309 lines (ctrl + t to view transcript)
+    pppppppppppppppppppppppppppppppppppppppppppp
+    FULL_RECORD_BYTES=206117 LINES=3046 EOF=True
+
+• The record contains a long padding block. I’m
+  reading it in bounded byte chunks and checking the
+  full contents so the receipt includes all three
+  constraint values.
+
+• Ran python3 - <<'PY'
+  │ from pathlib import Path
+  │ p = Path('/tmp/fm-codex-hook-layer-live.OrBSkM/
+  │ … +36 lines
+  └ line 1: FIRSTMATE_OP: v1 launch-brief: # Current
+    worker role contract
+    … +1063 lines (ctrl + t to view transcript)
+    bytes=206117, chunks=26, lines=3046,
+    final_carry=0
+
+• Explored
+  └ Read unfinished.txt
+
+• Ran find '/tmp/fm-codex-hook-layer-live.OrBSkM/
+  │ full-record/home/state/
+  │ native-full-record.inbox' -maxdepth 1 -name
+  │ … +1 lines
+  └ (no output)
+
+• The launch record is fully read. The steering inbox
+  has no messages, and I have the relaunch and
+  unfinished values. I’ll write the receipt now.
+
+• Ran cat > receipt.json <<'EOF'
+  │ {
+  │   "begin": "ef9141dfc4889482d7d32023",
+  │ … +9 lines
+  └ (no output)
+
+• Working (59s • esc to interrupt)
+
+
+› Ask Codex to do anything
+
+  gpt-6-sol high · /tmp/fm-codex-hook-layer-live.OrB…

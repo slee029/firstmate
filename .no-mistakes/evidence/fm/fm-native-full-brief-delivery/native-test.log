@@ -1,0 +1,5 @@
+ok - codex codex-cli 0.155.1 still publishes the hook feature flag firstmate disables
+ok - codex codex-cli 0.155.1 runs a firstmate crewmate launch with its hook layer disabled
+# native full-record bytes=205278 model=gpt-6-sol effort=high version=codex-cli 0.155.1
+ok - codex codex-cli 0.155.1 consumed beginning/middle/end of the complete synthetic launch record and emitted normal turn-end notification
+# all fm-codex-hook-layer-live-e2e tests passed
