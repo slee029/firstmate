@@ -1,3 +1,3 @@
-warning: /tmp/fm-codex-hook-layer-live.OrBSkM/full-record/home/data/native-full-record/launch-brief.md records no ship branch; defaulting to legacy branch fm/native-full-record
-warning: /tmp/fm-codex-hook-layer-live.OrBSkM/full-record/home/data/native-full-record/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
-relaunched native-full-record harness=codex from=codex model=gpt-6-sol effort=high backend=tmux endpoint=firstmate:fm-native-full-record worktree=/tmp/fm-codex-hook-layer-live.OrBSkM/full-record/wt
+warning: /tmp/fm-codex-hook-layer-live.3jMSWK/full-record/home/data/native-full-record/launch-brief.md records no ship branch; defaulting to legacy branch fm/native-full-record
+warning: /tmp/fm-codex-hook-layer-live.3jMSWK/full-record/home/data/native-full-record/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+relaunched native-full-record harness=codex from=codex model=gpt-6-sol effort=high backend=tmux endpoint=firstmate:fm-native-full-record worktree=/tmp/fm-codex-hook-layer-live.3jMSWK/full-record/wt
